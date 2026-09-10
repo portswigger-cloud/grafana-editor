@@ -47,8 +47,7 @@ jobs:
         id: image-version
         run: |
           # <nearest reachable vX.Y.Z>-<hash of the build context>, which is what
-          # bktools pipelinegen tags a container with too.
-          image_version="$(uv run --locked --group dev bktools-image-version-hash --tag)"
+          image_version="$(uvx container-image-hash --tag)"
           echo "tag=${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}:${image_version}" >> "$GITHUB_OUTPUT"
           echo "image_version=${image_version}" >> "$GITHUB_OUTPUT"
           # The version is the tag without the trailing build hash. Taking it from
