@@ -1,0 +1,18 @@
+# Copy to a location referenced by --config (or /config/grafana-editor.toml
+# in the container) and fill in your tenant's values.
+
+listen = "0.0.0.0"
+port = 8000
+log-level = "INFO"
+
+# The public URL this server is reachable at. MCP clients fetch
+# {resource-server-url}/.well-known/oauth-protected-resource from here to
+# discover which authorization server (Entra) to authenticate against.
+resource-server-url = "https://grafana-editor.example.internal"
+
+[entra]
+tenant-id = "00000000-0000-0000-0000-000000000000"
+client-id = "11111111-1111-1111-1111-111111111111"
+# Optional: only needed if the app registration's App ID URI was changed
+# away from the default "api://<client-id>".
+# audience = "api://11111111-1111-1111-1111-111111111111"
