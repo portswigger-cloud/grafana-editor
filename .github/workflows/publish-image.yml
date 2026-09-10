@@ -57,7 +57,7 @@ jobs:
           # Written to the job summary so that the version a run produced is on the
           # run's own page, rather than inside the log of whichever step computed it.
           {
-            echo "## relcoord ${image_version}"
+            echo "## ${IMAGE_REPOSITORY} ${image_version}"
             echo
             echo "- **Image:** \`${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}:${image_version}\`"
             echo "- **Version:** \`${image_version%-*}\`"
@@ -68,7 +68,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::436027055282:role/product-roles/${IMAGE_REPOSITORY}-ecr-publish
+          role-to-assume: arn:aws:iam::436027055282:role/crossplane/${{ env.IMAGE_REPOSITORY }}-ecr-publish
           aws-region: us-east-1
 
       - name: Check whether the image is already published
