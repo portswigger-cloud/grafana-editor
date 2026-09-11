@@ -29,6 +29,7 @@ def _entra_settings() -> EntraSettings:
         tenant_id="11111111-1111-1111-1111-111111111111",
         client_id="22222222-2222-2222-2222-222222222222",
         audience="https://grafana-editor.platform-prod.portswigger.io",
+        scope="mcp.access",
     )
 
 
@@ -49,4 +50,10 @@ def test_protected_resource_metadata_has_no_trailing_slash() -> None:
     assert body["resource"] == "https://grafana-editor.platform-prod.portswigger.io"
     assert body["authorization_servers"] == [
         "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0"
+    ]
+    # Without this, MCP clients have no way to know which scope to request
+    # on this resource and fall back to bare OIDC scopes, which Entra
+    # rejects with AADSTS9010010 just the same as a resource/scope mismatch.
+    assert body["scopes_supported"] == [
+        "https://grafana-editor.platform-prod.portswigger.io/mcp.access"
     ]

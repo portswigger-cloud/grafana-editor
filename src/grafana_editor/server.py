@@ -120,6 +120,12 @@ def _protected_resource_metadata_route(settings: Settings) -> Route:
     registered, but now unreachable) is never hit. This lets ``resource`` in
     the published metadata be exactly ``resource-server-url`` as configured,
     with no forced trailing slash.
+
+    We also publish ``scopes_supported`` with this server's full scope
+    identifier. Without it, an MCP client has no way to know which scope to
+    request on this resource and falls back to requesting only generic OIDC
+    scopes (``openid profile email offline_access``) — none of which belong
+    to this resource, which Entra also rejects with AADSTS9010010.
     """
     assert settings.entra is not None
     assert settings.resource_server_url is not None
@@ -128,6 +134,9 @@ def _protected_resource_metadata_route(settings: Settings) -> Route:
             "resource": settings.resource_server_url,
             "authorization_servers": [settings.entra.issuer],
             "bearer_methods_supported": ["header"],
+            "scopes_supported": [
+                f"{settings.resource_server_url}/{settings.entra.scope}"
+            ],
         }
     ).encode()
 

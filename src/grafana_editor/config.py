@@ -16,11 +16,16 @@ class EntraSettings:
     registration's App ID URI to ``api://<client-id>``, so that is the
     default here too; set it explicitly if the app registration's App ID URI
     was customised.
+
+    ``scope`` is the name of the scope added under "Expose an API" (e.g.
+    ``mcp.access``), used to tell MCP clients which scope to request via this
+    server's OAuth Protected Resource Metadata.
     """
 
     tenant_id: str
     client_id: str
     audience: str
+    scope: str = "mcp.access"
 
     @property
     def issuer(self) -> str:
@@ -31,10 +36,12 @@ class EntraSettings:
         tenant_id = _required_string(data, "tenant-id", context="entra")
         client_id = _required_string(data, "client-id", context="entra")
         audience = _optional_string(data, "audience", context="entra")
+        scope = _optional_string(data, "scope", context="entra")
         return cls(
             tenant_id=tenant_id,
             client_id=client_id,
             audience=audience or f"api://{client_id}",
+            scope=scope or "mcp.access",
         )
 
 
