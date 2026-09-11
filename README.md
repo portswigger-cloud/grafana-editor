@@ -30,6 +30,10 @@ This server never talks to Entra to log anyone in. Instead:
    the client sends as a `Bearer` token on every MCP request.
 4. This server validates that token's signature (via Entra's JWKS),
    issuer, audience and expiry, and reads the caller's email out of it.
+   Both v1 (`https://sts.windows.net/{tenant}/`) and v2
+   (`https://login.microsoftonline.com/{tenant}/v2.0`) issuers are accepted,
+   so the app registration works whether or not its manifest sets
+   `requestedAccessTokenVersion` to 2.
 
 That means setting this up requires an **app registration in Entra ID**:
 

@@ -29,7 +29,22 @@ class EntraSettings:
 
     @property
     def issuer(self) -> str:
+        """The v2 issuer, used for OIDC discovery and published as this
+        server's authorization server."""
         return f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
+
+    @property
+    def accepted_issuers(self) -> tuple[str, ...]:
+        """Issuers an access token for this tenant may legitimately carry.
+
+        Entra only stamps the v2 issuer into tokens when the app
+        registration's manifest sets ``requestedAccessTokenVersion`` to 2.
+        Left at its default, it issues v1 tokens — same audience, but an
+        issuer of ``https://sts.windows.net/{tenant}/`` — even when the
+        client authenticated via the v2 endpoints. Accepting both means no
+        manifest editing is needed to register an app for this server.
+        """
+        return (self.issuer, f"https://sts.windows.net/{self.tenant_id}/")
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> EntraSettings:
