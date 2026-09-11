@@ -34,6 +34,17 @@ class EntraSettings:
         return f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
 
     @property
+    def qualified_scope(self) -> str:
+        """The scope as Entra names it: the App ID URI, then the scope name.
+
+        This is the form a client must put in an authorization request's
+        ``scope`` parameter for Entra to resolve it against this app, so it
+        is also the form advertised in this server's OAuth Protected
+        Resource Metadata and the form ``AccessToken.scopes`` reports.
+        """
+        return f"{self.audience.rstrip('/')}/{self.scope}"
+
+    @property
     def accepted_issuers(self) -> tuple[str, ...]:
         """Issuers an access token for this tenant may legitimately carry.
 

@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.routes import cors_middleware
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -68,8 +65,19 @@ def _build_auth(
         )
     token_verifier = EntraTokenVerifier(settings.entra)
     auth_settings = AuthSettings(
-        issuer_url=AnyHttpUrl(settings.entra.issuer),
-        resource_server_url=AnyHttpUrl(settings.resource_server_url),
+        # Pass these as strings rather than pre-built AnyHttpUrl values:
+        # AuthSettings sets `url_preserve_empty_path`, so it keeps a
+        # path-less URL's canonical slash-free form, whereas constructing
+        # AnyHttpUrl ourselves normalises "https://host" to "https://host/"
+        # before the model ever sees it. The resource identifier has to match
+        # the Entra Application ID URI exactly, and Entra refuses to register
+        # one ending in a slash.
+        issuer_url=settings.entra.issuer,
+        resource_server_url=settings.resource_server_url,
+        # Advertised as `scopes_supported` in the protected resource
+        # metadata, so clients know to ask Entra for this scope rather than
+        # falling back to bare OIDC scopes, and required on every request.
+        required_scopes=[settings.entra.qualified_scope],
         # EntraTokenVerifier already checks the token's audience against
         # settings.entra.audience, so the RFC 8707 resource indicator check
         # below would be redundant.
@@ -89,66 +97,15 @@ def create_app(settings: Settings, *, disable_auth: bool = False) -> Starlette:
     async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
-    routes: list[Route | Mount] = [Route("/healthz", health)]
-    if not disable_auth and settings.entra is not None:
-        routes.append(_protected_resource_metadata_route(settings))
-    routes.append(
-        Mount(
-            "/",
-            app=mcp.streamable_http_app(
-                host=settings.listen, json_response=True, stateless_http=True
+    return Starlette(
+        routes=[
+            Route("/healthz", health),
+            Mount(
+                "/",
+                app=mcp.streamable_http_app(
+                    host=settings.listen, json_response=True, stateless_http=True
+                ),
             ),
-        )
-    )
-
-    return Starlette(routes=routes, lifespan=lifespan)
-
-
-def _protected_resource_metadata_route(settings: Settings) -> Route:
-    """Serve ``/.well-known/oauth-protected-resource`` (RFC 9728) ourselves.
-
-    The upstream `mcp` SDK also registers a route at this path (nested under
-    the streamable HTTP app mounted below), built from
-    ``AuthSettings.resource_server_url``, which is a pydantic ``AnyHttpUrl``.
-    That type always normalises a bare-origin URL to end in a slash (e.g.
-    ``"https://host"`` becomes ``"https://host/"``) — but Entra refuses to
-    register an Application ID URI that ends in a slash, so the two can
-    never be made to match through the SDK's own route.
-
-    Registering our own route at the same path, earlier in this app's route
-    list, means Starlette matches ours first and the SDK's copy (still
-    registered, but now unreachable) is never hit. This lets ``resource`` in
-    the published metadata be exactly ``resource-server-url`` as configured,
-    with no forced trailing slash.
-
-    We also publish ``scopes_supported`` with this server's full scope
-    identifier. Without it, an MCP client has no way to know which scope to
-    request on this resource and falls back to requesting only generic OIDC
-    scopes (``openid profile email offline_access``) — none of which belong
-    to this resource, which Entra also rejects with AADSTS9010010.
-    """
-    assert settings.entra is not None
-    assert settings.resource_server_url is not None
-    body = json.dumps(
-        {
-            "resource": settings.resource_server_url,
-            "authorization_servers": [settings.entra.issuer],
-            "bearer_methods_supported": ["header"],
-            "scopes_supported": [
-                f"{settings.resource_server_url}/{settings.entra.scope}"
-            ],
-        }
-    ).encode()
-
-    async def handle(request: Request) -> Response:
-        return Response(
-            body,
-            media_type="application/json",
-            headers={"Cache-Control": "public, max-age=3600"},
-        )
-
-    return Route(
-        "/.well-known/oauth-protected-resource",
-        endpoint=cors_middleware(handle, ["GET", "OPTIONS"]),
-        methods=["GET", "OPTIONS"],
+        ],
+        lifespan=lifespan,
     )

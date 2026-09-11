@@ -118,6 +118,24 @@ def test_rejects_expired_token(private_pem: str, signing_key: PyJWK) -> None:
     assert _verify(signing_key, token) is None
 
 
+def test_reports_scopes_qualified_with_the_app_id_uri(
+    private_pem: str, signing_key: PyJWK
+) -> None:
+    """Entra puts bare names in `scp`, but the SDK checks them against
+    `AuthSettings.required_scopes`, which holds the qualified form."""
+    token = _make_token(
+        private_pem,
+        extra={"email": "alice@example.com", "scp": "mcp.access other.scope"},
+    )
+    access_token = _verify(signing_key, token)
+
+    assert access_token is not None
+    assert access_token.scopes == [
+        f"api://{CLIENT_ID}/mcp.access",
+        f"api://{CLIENT_ID}/other.scope",
+    ]
+
+
 def test_accepts_v1_issuer(private_pem: str, signing_key: PyJWK) -> None:
     """An app registration left at the default requestedAccessTokenVersion
     issues v1 tokens, which carry the sts.windows.net issuer."""
