@@ -48,6 +48,25 @@ That means setting this up requires an **app registration in Entra ID**:
 Fill in the tenant ID, client ID, and this server's own public URL in
 `config.toml.example`.
 
+### A note on custom Application ID URIs and trailing slashes
+
+If you customise the Application ID URI to an `https://` URL under your own
+domain (rather than the default `api://<client-id>`), it must be set to
+**exactly** the same value as `resource-server-url`: MCP clients send
+`resource-server-url` straight back to Entra as the OAuth `resource`
+parameter (RFC 8707), and Entra rejects the request if that doesn't name the
+Application ID URI the requested scope belongs to.
+
+Entra also refuses to register an Application ID URI that ends in a slash.
+This matters because this server builds its own OAuth Protected Resource
+Metadata (`/.well-known/oauth-protected-resource`) rather than delegating it
+to the underlying `mcp` library, specifically so that a bare-origin
+`resource-server-url` (e.g. `https://grafana-editor.example.internal`) is
+published byte-for-byte, with no trailing slash — see
+`_protected_resource_metadata_route` in `server.py`. Without that, the
+published `resource` value would always end up with a forced trailing slash
+and could never match the Application ID URI.
+
 ## Run it
 
 ```sh

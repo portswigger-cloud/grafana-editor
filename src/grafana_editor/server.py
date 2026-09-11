@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.routes import cors_middleware
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -87,15 +89,57 @@ def create_app(settings: Settings, *, disable_auth: bool = False) -> Starlette:
     async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
-    return Starlette(
-        routes=[
-            Route("/healthz", health),
-            Mount(
-                "/",
-                app=mcp.streamable_http_app(
-                    host=settings.listen, json_response=True, stateless_http=True
-                ),
+    routes: list[Route | Mount] = [Route("/healthz", health)]
+    if not disable_auth and settings.entra is not None:
+        routes.append(_protected_resource_metadata_route(settings))
+    routes.append(
+        Mount(
+            "/",
+            app=mcp.streamable_http_app(
+                host=settings.listen, json_response=True, stateless_http=True
             ),
-        ],
-        lifespan=lifespan,
+        )
+    )
+
+    return Starlette(routes=routes, lifespan=lifespan)
+
+
+def _protected_resource_metadata_route(settings: Settings) -> Route:
+    """Serve ``/.well-known/oauth-protected-resource`` (RFC 9728) ourselves.
+
+    The upstream `mcp` SDK also registers a route at this path (nested under
+    the streamable HTTP app mounted below), built from
+    ``AuthSettings.resource_server_url``, which is a pydantic ``AnyHttpUrl``.
+    That type always normalises a bare-origin URL to end in a slash (e.g.
+    ``"https://host"`` becomes ``"https://host/"``) — but Entra refuses to
+    register an Application ID URI that ends in a slash, so the two can
+    never be made to match through the SDK's own route.
+
+    Registering our own route at the same path, earlier in this app's route
+    list, means Starlette matches ours first and the SDK's copy (still
+    registered, but now unreachable) is never hit. This lets ``resource`` in
+    the published metadata be exactly ``resource-server-url`` as configured,
+    with no forced trailing slash.
+    """
+    assert settings.entra is not None
+    assert settings.resource_server_url is not None
+    body = json.dumps(
+        {
+            "resource": settings.resource_server_url,
+            "authorization_servers": [settings.entra.issuer],
+            "bearer_methods_supported": ["header"],
+        }
+    ).encode()
+
+    async def handle(request: Request) -> Response:
+        return Response(
+            body,
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    return Route(
+        "/.well-known/oauth-protected-resource",
+        endpoint=cors_middleware(handle, ["GET", "OPTIONS"]),
+        methods=["GET", "OPTIONS"],
     )
