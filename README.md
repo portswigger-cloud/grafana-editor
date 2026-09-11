@@ -46,7 +46,13 @@ That means setting this up requires an **app registration in Entra ID**:
    check its docs for connecting to an Entra-protected MCP server).
 
 Fill in the tenant ID, client ID, and this server's own public URL in
-`config.toml.example`.
+`config.toml.example`. If you name the scope from step 2 anything other than
+`mcp.access`, also set `scope` under `[entra]` to match — this server
+publishes it in its OAuth Protected Resource Metadata so MCP clients know
+which scope to request; without it, clients request only generic OIDC
+scopes (`openid profile email offline_access`), none of which belong to
+this resource, and Entra rejects the request with AADSTS9010010 just as it
+would for a resource/Application-ID-URI mismatch.
 
 ### A note on custom Application ID URIs and trailing slashes
 
