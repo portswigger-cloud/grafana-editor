@@ -63,6 +63,9 @@ def test_entra_audience_override(tmp_path: Path) -> None:
     assert settings.entra is not None
     assert settings.entra.audience == "api://custom-app-id-uri"
     assert settings.entra.scope == "grafana.edit"
+    # Qualified with the App ID URI, which is what Entra resolves a scope
+    # against — not with resource-server-url, which need not be equal to it.
+    assert settings.entra.qualified_scope == "api://custom-app-id-uri/grafana.edit"
 
 
 def test_rejects_invalid_log_level(tmp_path: Path) -> None:

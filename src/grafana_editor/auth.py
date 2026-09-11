@@ -79,7 +79,7 @@ class EntraTokenVerifier:
         _require_claim(claims, "iss", self._settings.accepted_issuers)
         _require_claim(claims, "aud", (self._settings.audience,))
         email = _email_from_claims(claims)
-        scopes = _scopes_from_claims(claims)
+        scopes = _scopes_from_claims(claims, self._settings.audience)
         client_id = claims.get("azp") or claims.get("appid") or claims.get("sub", "")
         return EntraAccessToken(
             token=token,
@@ -155,7 +155,21 @@ def _email_from_claims(claims: dict[str, Any]) -> str:
     )
 
 
-def _scopes_from_claims(claims: dict[str, Any]) -> list[str]:
+def _scopes_from_claims(claims: dict[str, Any], app_id_uri: str) -> list[str]:
+    """Read the token's scopes, qualified with the App ID URI.
+
+    Entra puts bare scope names in ``scp`` (``"mcp.access"``), but the scope
+    identifier used everywhere else — the authorization request, the metadata
+    document's ``scopes_supported``, and so `AuthSettings.required_scopes`
+    which the SDK checks these against — is ``{App ID URI}/{name}``. Qualify
+    them here so the two are comparable.
+    """
+    prefix = app_id_uri.rstrip("/")
+    names = _scope_names_from_claims(claims)
+    return [f"{prefix}/{name}" for name in names]
+
+
+def _scope_names_from_claims(claims: dict[str, Any]) -> list[str]:
     scope = claims.get("scp")
     if isinstance(scope, str):
         return scope.split()

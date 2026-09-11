@@ -17,7 +17,8 @@ client-id = "11111111-1111-1111-1111-111111111111"
 # away from the default "api://<client-id>".
 # audience = "api://11111111-1111-1111-1111-111111111111"
 # Optional: the name of the scope added under "Expose an API" in the app
-# registration. Defaults to "mcp.access". Published (as
-# {resource-server-url}/{scope}) in this server's OAuth Protected Resource
-# Metadata so MCP clients know which scope to request.
+# registration. Defaults to "mcp.access". Qualified with the App ID URI (as
+# {audience}/{scope}), it is advertised in this server's OAuth Protected
+# Resource Metadata so MCP clients know which scope to request, and is
+# required on every request.
 # scope = "mcp.access"
