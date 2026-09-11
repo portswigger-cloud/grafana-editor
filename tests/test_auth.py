@@ -47,12 +47,13 @@ def _make_token(
     private_pem: str,
     *,
     audience: str = f"api://{CLIENT_ID}",
+    issuer: str = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
     extra: dict[str, object] | None = None,
     expires_in: int = 300,
 ) -> str:
     now = int(time.time())
     payload: dict[str, object] = {
-        "iss": f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
+        "iss": issuer,
         "aud": audience,
         "iat": now,
         "exp": now + expires_in,
@@ -115,3 +116,64 @@ def test_rejects_expired_token(private_pem: str, signing_key: PyJWK) -> None:
     )
 
     assert _verify(signing_key, token) is None
+
+
+def test_accepts_v1_issuer(private_pem: str, signing_key: PyJWK) -> None:
+    """An app registration left at the default requestedAccessTokenVersion
+    issues v1 tokens, which carry the sts.windows.net issuer."""
+    token = _make_token(
+        private_pem,
+        issuer=f"https://sts.windows.net/{TENANT_ID}/",
+        extra={"email": "alice@example.com"},
+    )
+    access_token = _verify(signing_key, token)
+
+    assert access_token is not None
+    assert access_token.email == "alice@example.com"
+
+
+def test_rejects_issuer_from_another_tenant(
+    private_pem: str, signing_key: PyJWK
+) -> None:
+    token = _make_token(
+        private_pem,
+        issuer="https://login.microsoftonline.com/some-other-tenant/v2.0",
+        extra={"email": "alice@example.com"},
+    )
+
+    assert _verify(signing_key, token) is None
+
+
+def test_issuer_rejection_names_both_sides(
+    private_pem: str, signing_key: PyJWK, caplog: pytest.LogCaptureFixture
+) -> None:
+    token = _make_token(
+        private_pem,
+        issuer="https://login.microsoftonline.com/some-other-tenant/v2.0",
+        extra={"email": "alice@example.com"},
+    )
+
+    with caplog.at_level("WARNING"):
+        assert _verify(signing_key, token) is None
+
+    assert "'iss'" in caplog.text
+    assert "https://login.microsoftonline.com/some-other-tenant/v2.0" in caplog.text
+    assert f"https://login.microsoftonline.com/{TENANT_ID}/v2.0" in caplog.text
+    assert f"https://sts.windows.net/{TENANT_ID}/" in caplog.text
+
+
+def test_audience_rejection_names_both_sides(
+    private_pem: str, signing_key: PyJWK, caplog: pytest.LogCaptureFixture
+) -> None:
+    token = _make_token(
+        private_pem,
+        audience="api://someone-else",
+        extra={"email": "alice@example.com"},
+    )
+
+    with caplog.at_level("WARNING"):
+        assert _verify(signing_key, token) is None
+
+    assert "'aud'" in caplog.text
+    assert "api://someone-else" in caplog.text
+    assert f"api://{CLIENT_ID}" in caplog.text

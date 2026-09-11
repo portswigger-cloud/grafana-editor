@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -55,20 +56,28 @@ class EntraTokenVerifier:
         try:
             return await asyncio.to_thread(self._verify, token)
         except (InvalidTokenError, PyJWKClientError, ValueError) as exc:
-            logger.warning("Bearer token rejected: %s", exc)
+            logger.warning("Bearer token rejected (%s): %s", type(exc).__name__, exc)
             return None
 
     def _verify(self, token: str) -> EntraAccessToken:
         jwks_client = self._get_jwks_client()
         signing_key = jwks_client.get_signing_key_from_jwt(token)
+        # PyJWT checks `iss` and `aud` itself, but raises a bare "Invalid
+        # issuer" / "Invalid audience" that names neither what it expected
+        # nor what the token carried, which makes a misconfigured app
+        # registration needlessly hard to diagnose. Check them here instead.
         claims = jwt.decode(
             token,
             key=signing_key.key,
             algorithms=list(PUBLIC_KEY_ALGORITHMS),
-            audience=self._settings.audience,
-            issuer=self._settings.issuer,
-            options={"require": ["exp", "iat", "iss", "aud"]},
+            options={
+                "require": ["exp", "iat", "iss", "aud"],
+                "verify_iss": False,
+                "verify_aud": False,
+            },
         )
+        _require_claim(claims, "iss", self._settings.accepted_issuers)
+        _require_claim(claims, "aud", (self._settings.audience,))
         email = _email_from_claims(claims)
         scopes = _scopes_from_claims(claims)
         client_id = claims.get("azp") or claims.get("appid") or claims.get("sub", "")
@@ -111,6 +120,21 @@ def _discover_jwks_uri(tenant_id: str) -> str:
             f"OIDC configuration for tenant '{tenant_id}' did not include jwks_uri"
         )
     return jwks_uri
+
+
+def _require_claim(claims: dict[str, Any], name: str, accepted: Sequence[str]) -> None:
+    """Check one claim against the values this server accepts.
+
+    Raises with both sides spelled out, so a rejected token says which
+    setting to go and look at rather than just that something didn't match.
+    """
+    value = claims.get(name)
+    if value in accepted:
+        return
+    wanted = " or ".join(repr(candidate) for candidate in accepted)
+    raise InvalidTokenError(
+        f"expected the '{name}' claim to be {wanted}, but it was {value!r}"
+    )
 
 
 def _email_from_claims(claims: dict[str, Any]) -> str:
