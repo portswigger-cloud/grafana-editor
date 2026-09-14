@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+from pathlib import Path
+
+import httpx
+import pytest
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult
 from starlette.testclient import TestClient
 
 from grafana_editor.auth import _scopes_from_claims
-from grafana_editor.config import RoleConfig, Settings
-from grafana_editor.server import _build_auth, create_app
+from grafana_editor.config import GrafanaSettings, RoleConfig, Settings
+from grafana_editor.grafana import GrafanaClient
+from grafana_editor.server import _build_auth, create_app, create_server
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 RESOURCE = "https://grafana-editor.platform-prod.portswigger.io"
@@ -13,7 +20,15 @@ ORIGIN = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0"
 SCOPE = f"{RESOURCE}/mcp.access"
 
 
-def _settings() -> Settings:
+def _grafana(tmp_path: Path) -> GrafanaSettings:
+    token = tmp_path / "token"
+    token.write_text("glsa-test-token")
+    return GrafanaSettings(
+        url="https://grafana.example.com", service_account_token_path=str(token)
+    )
+
+
+def _settings(tmp_path: Path) -> Settings:
     return Settings(
         resource_server_url=RESOURCE,
         origin=ORIGIN,
@@ -25,11 +40,13 @@ def _settings() -> Settings:
                 audience=RESOURCE,
             ),
         ),
+        grafana=_grafana(tmp_path),
     )
 
 
-def test_health_endpoint() -> None:
-    with TestClient(create_app(Settings(), disable_auth=True)) as client:
+def test_health_endpoint(tmp_path: Path) -> None:
+    settings = Settings(grafana=_grafana(tmp_path))
+    with TestClient(create_app(settings, disable_auth=True)) as client:
         response = client.get("/healthz")
 
     assert response.status_code == 200
@@ -47,8 +64,13 @@ def test_requires_auth_config_unless_auth_disabled() -> None:
         raise AssertionError("expected RuntimeError for missing auth config")
 
 
-def test_protected_resource_metadata_has_no_trailing_slash() -> None:
-    with TestClient(create_app(_settings())) as client:
+def test_requires_grafana_config() -> None:
+    with pytest.raises(RuntimeError, match="grafana"):
+        create_app(Settings(), disable_auth=True)
+
+
+def test_protected_resource_metadata_has_no_trailing_slash(tmp_path: Path) -> None:
+    with TestClient(create_app(_settings(tmp_path))) as client:
         response = client.get("/.well-known/oauth-protected-resource")
 
     assert response.status_code == 200
@@ -66,12 +88,14 @@ def test_protected_resource_metadata_has_no_trailing_slash() -> None:
     assert body["scopes_supported"] == [SCOPE]
 
 
-def test_required_scopes_match_the_scopes_the_verifier_reports() -> None:
+def test_required_scopes_match_the_scopes_the_verifier_reports(
+    tmp_path: Path,
+) -> None:
     """`scopes` is advertised as `scopes_supported` *and* checked against
     `AccessToken.scopes` by exact string match, so the two sides have to be
     built the same way — otherwise every authenticated request 403s with
     `insufficient_scope`."""
-    settings = _settings()
+    settings = _settings(tmp_path)
 
     _, auth_settings = _build_auth(settings, False)
 
@@ -82,3 +106,71 @@ def test_required_scopes_match_the_scopes_the_verifier_reports() -> None:
     assert _scopes_from_claims({"scp": "mcp.access"}, settings.roles[0].audience) == [
         SCOPE
     ]
+
+
+def _client_against(tmp_path: Path, handler: object) -> GrafanaClient:
+    return GrafanaClient(
+        _grafana(tmp_path),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),  # ty: ignore[invalid-argument-type]
+    )
+
+
+@pytest.mark.anyio
+async def test_exposes_the_query_tools(tmp_path: Path) -> None:
+    server = create_server(_settings(tmp_path), disable_auth=True)
+
+    names = {tool.name for tool in await server.list_tools()}
+
+    assert names == {
+        "whoami",
+        "list_datasources",
+        "list_metrics",
+        "describe_metrics",
+        "list_labels",
+        "list_label_values",
+        "query_instant",
+        "query_range",
+    }
+
+
+@pytest.mark.anyio
+async def test_a_tool_call_reaches_grafana_and_comes_back_structured(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/datasources"
+        return httpx.Response(
+            200, json=[{"uid": "mimir-uid", "name": "Mimir", "type": "prometheus"}]
+        )
+
+    server = create_server(
+        _settings(tmp_path),
+        disable_auth=True,
+        grafana_client=_client_against(tmp_path, handler),
+    )
+
+    result = await server.call_tool("list_datasources", {})
+
+    assert isinstance(result, CallToolResult)
+    assert result.structured_content is not None
+    assert result.structured_content["grafana_url"] == "https://grafana.example.com"
+    assert result.structured_content["datasources"][0]["uid"] == "mimir-uid"
+
+
+@pytest.mark.anyio
+async def test_a_grafana_failure_reaches_the_caller_as_a_tool_error(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"message": "Access denied to datasource"})
+
+    server = create_server(
+        _settings(tmp_path),
+        disable_auth=True,
+        grafana_client=_client_against(tmp_path, handler),
+    )
+
+    # Not a bare Exception: MCPServer replaces anything else with a generic
+    # "internal error", which would hide the reason from the caller.
+    with pytest.raises(ToolError, match="Access denied to datasource"):
+        await server.call_tool("list_metrics", {"datasource": "Mimir"})

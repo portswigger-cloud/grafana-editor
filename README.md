@@ -2,10 +2,14 @@
 
 An MCP server for editing Grafana, authenticated via Microsoft Entra ID SSO.
 
-Grafana-editing tools are still to come. For now this is the authentication
-scaffolding plus one tool, `whoami`, that returns the email address of the
-signed-in user, so the SSO plumbing can be exercised end to end before any
-Grafana-specific tool is built on top of it.
+It exposes tools for exploring and querying one Grafana instance's
+datasources, so that a client can find out what data actually exists before
+writing a query or a dashboard panel. Dashboard writing is still to come.
+
+Callers are authenticated as themselves against Entra ID; calls to Grafana
+are then made with a single Grafana service account token, so Grafana sees
+one identity rather than the signed-in user. Only reads are exposed today,
+so that distinction does not yet affect what anyone can do.
 
 It uses:
 
@@ -92,6 +96,30 @@ form) rather than URLs we built ourselves. A mismatch here shows up as an
 `aud` claim that doesn't match `audience` — the rejection log names both
 values.
 
+## How it talks to Grafana
+
+Every Grafana call carries a bearer token read from the file named by
+`grafana.service-account-token-path`. Naming the token by path rather than by
+value keeps it out of the config file, which is a ConfigMap in the deployed
+setup, and lets it come from a mounted Kubernetes secret instead. The file is
+re-read whenever its size or mtime changes, so rotating the secret does not
+need a restart.
+
+Create the token in Grafana under **Administration → Users and access →
+Service accounts**. For the tools exposed today it needs the **Viewer** role,
+which carries `datasources:read` and `datasources:query`.
+
+Datasource queries go through Grafana's datasource proxy
+(`/api/datasources/proxy/uid/...`), so Grafana's own datasource
+authentication and access control still apply and this server never needs
+credentials for Mimir or Loki themselves.
+
+Prometheus-shaped datasources (`prometheus`, which is also how Grafana reports
+a Mimir or Thanos backend, and `grafana-amazonprometheus-datasource`) and
+`loki` are queryable. `list_datasources` reports `queryable: false` for
+anything else, and a query against one names the type it got and the types it
+needed.
+
 ## Run it
 
 ```sh
@@ -120,6 +148,35 @@ http://127.0.0.1:8000/mcp
 Tools:
 
 - `whoami` — returns `{"email": "..."}` for the signed-in user.
+- `list_datasources` — the datasources Grafana has, with their uids, types,
+  and whether this server can query them.
+- `list_metrics` — metric names on a Prometheus-shaped datasource.
+- `describe_metrics` — the type, unit and help text a metric was exported
+  with, which is what decides whether a panel needs `rate()` and how it
+  should be formatted.
+- `list_labels` — label names on a Prometheus or Loki datasource.
+- `list_label_values` — the values one label takes; this is what fills in a
+  dashboard template variable's options.
+- `query_instant` — evaluate PromQL or LogQL at a single instant.
+- `query_range` — evaluate PromQL or LogQL over a window, which is the shape
+  a time series panel draws.
+
+Three conventions run through all of them, so that a caller does not have to
+carry Grafana's quirks:
+
+- A datasource is named by **uid or display name**, whichever the caller
+  happens to be holding.
+- Times are given as an RFC 3339 timestamp, unix seconds, or a relative
+  expression (`now`, `now-15m`, `now-6h`). Omitting them queries the last
+  hour. The server sends RFC 3339 onwards, which sidesteps Prometheus reading
+  a bare number as unix seconds while Loki reads it as nanoseconds.
+- A range query with no `step` gets one that yields a couple of hundred
+  points over the window, snapped to a value a human would have picked, and
+  the reply reports which step was used.
+
+Large results are truncated rather than returned in full, and a truncated
+result carries a `truncated` field saying what was dropped and how to ask for
+less.
 
 ## Test it
 

@@ -50,6 +50,27 @@ class RoleConfig:
 
 
 @dataclass(frozen=True)
+class GrafanaSettings:
+    """How to reach the Grafana instance this server edits.
+
+    The token is named by path rather than by value so that it can come from
+    a Kubernetes secret mounted into the container, and so that it never
+    appears in the config file (which is a ConfigMap in this deployment).
+    """
+
+    url: str
+    service_account_token_path: str
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> GrafanaSettings:
+        url = _required_string(data, "url", context="grafana")
+        token_path = _required_string(
+            data, "service-account-token-path", context="grafana"
+        )
+        return cls(url=url.rstrip("/"), service_account_token_path=token_path)
+
+
+@dataclass(frozen=True)
 class Settings:
     """This server's configuration.
 
@@ -60,6 +81,10 @@ class Settings:
     separate question of which tokens are accepted once a client comes back
     holding one. The two are not interchangeable — a tenant can hand out
     tokens whose issuer is not the authorization server its clients talk to.
+
+    ``grafana`` is unrelated to any of that: it is the Grafana instance whose
+    data the tools read, which this server reaches as its own service account
+    rather than as the caller.
     """
 
     listen: str = "0.0.0.0"
@@ -69,6 +94,7 @@ class Settings:
     origin: str | None = None
     scopes: tuple[str, ...] = ()
     roles: tuple[RoleConfig, ...] = ()
+    grafana: GrafanaSettings | None = None
 
     @classmethod
     def from_toml(cls, path: str | Path) -> Settings:
@@ -88,7 +114,17 @@ class Settings:
             origin=_optional_string(data, "origin", context="top-level"),
             scopes=_scopes(data),
             roles=_roles(data),
+            grafana=_grafana(data),
         )
+
+
+def _grafana(data: dict[str, Any]) -> GrafanaSettings | None:
+    raw = data.get("grafana")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"grafana must be a table, not a {type(raw).__name__}")
+    return GrafanaSettings.from_mapping(raw)
 
 
 def _roles(data: dict[str, Any]) -> tuple[RoleConfig, ...]:
