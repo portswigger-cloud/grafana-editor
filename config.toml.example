@@ -5,20 +5,42 @@ listen = "0.0.0.0"
 port = 8000
 log-level = "INFO"
 
-# The public URL this server is reachable at. MCP clients fetch
-# {resource-server-url}/.well-known/oauth-protected-resource from here to
-# discover which authorization server (Entra) to authenticate against.
+# What this server publishes in its OAuth Protected Resource Metadata, which
+# MCP clients fetch from
+# {resource-server-url}/.well-known/oauth-protected-resource:
+#
+#   resource-server-url  the public URL this server is reachable at
+#   origin               the authorization server clients authenticate against
+#   scopes               the scopes clients should ask it for, advertised as
+#                        scopes_supported and required on every request
+#
+# For Entra, `origin` is the tenant's v2 endpoint and each scope is the app
+# registration's Application ID URI followed by the name of a scope added
+# under "Expose an API". Advertising the scope is what stops clients falling
+# back to requesting only generic OIDC scopes, which Entra rejects with
+# AADSTS9010010.
 resource-server-url = "https://grafana-editor.example.internal"
+origin = "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+scopes = ["api://11111111-1111-1111-1111-111111111111/mcp.access"]
 
-[entra]
-tenant-id = "00000000-0000-0000-0000-000000000000"
-client-id = "11111111-1111-1111-1111-111111111111"
-# Optional: only needed if the app registration's App ID URI was changed
-# away from the default "api://<client-id>".
-# audience = "api://11111111-1111-1111-1111-111111111111"
-# Optional: the name of the scope added under "Expose an API" in the app
-# registration. Defaults to "mcp.access". Qualified with the App ID URI (as
-# {audience}/{scope}), it is advertised in this server's OAuth Protected
-# Resource Metadata so MCP clients know which scope to request, and is
-# required on every request.
-# scope = "mcp.access"
+# Which access tokens this server accepts. Each [[role]] names one acceptable
+# issuer/audience pair; a request must carry a Bearer token that validates
+# against at least one of them. Signing keys are found by reading jwks_uri out
+# of {issuer}/.well-known/openid-configuration.
+#
+# Note that `issuer` is not necessarily the same URL as `origin` above: an
+# Entra app registration whose manifest leaves requestedAccessTokenVersion at
+# its default issues v1 tokens, whose issuer is
+# https://sts.windows.net/{tenant}/, even though the client authenticated via
+# the v2 endpoints. Check the `iss` claim of a token the tenant actually
+# issues rather than assuming; a rejected token is logged with both the
+# expected and the received value.
+[[role]]
+name = "entra"
+issuer = "https://sts.windows.net/00000000-0000-0000-0000-000000000000/"
+# The app registration's Application ID URI, which Entra stamps into the
+# token's "aud" claim. Entra defaults it to api://<client-id>.
+audience = "api://11111111-1111-1111-1111-111111111111"
+# Optional: only for an issuer that publishes no OpenID configuration
+# document, or to point at a key set other than the one it advertises.
+# jwks-uri = "https://login.microsoftonline.com/common/discovery/keys"

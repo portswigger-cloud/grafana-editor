@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
-from grafana_editor.auth import EntraAccessToken, EntraTokenVerifier
+from grafana_editor.auth import RoleTokenVerifier, UserAccessToken
 from grafana_editor.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def create_server(settings: Settings, *, disable_auth: bool = False) -> MCPServe
         access_token = get_access_token()
         if access_token is None:
             raise ToolError("no authenticated user is associated with this request")
-        if not isinstance(access_token, EntraAccessToken):
+        if not isinstance(access_token, UserAccessToken):
             raise ToolError(
                 "authentication is disabled on this server; no user is signed in"
             )
@@ -51,19 +51,24 @@ def create_server(settings: Settings, *, disable_auth: bool = False) -> MCPServe
 
 def _build_auth(
     settings: Settings, disable_auth: bool
-) -> tuple[EntraTokenVerifier | None, AuthSettings | None]:
+) -> tuple[RoleTokenVerifier | None, AuthSettings | None]:
     if disable_auth:
         logger.warning("authentication disabled by --disable-auth")
         return None, None
-    if settings.entra is None:
-        raise RuntimeError(
-            "an [entra] section is required in the config file (or pass --disable-auth)"
+    missing = [
+        name
+        for name, value in (
+            ("resource-server-url", settings.resource_server_url),
+            ("origin", settings.origin),
+            ("at least one [[role]]", settings.roles),
         )
-    if settings.resource_server_url is None:
+        if not value
+    ]
+    if missing:
         raise RuntimeError(
-            "resource-server-url is required in the config file (or pass --disable-auth)"
+            f"{', '.join(missing)} required in the config file (or pass --disable-auth)"
         )
-    token_verifier = EntraTokenVerifier(settings.entra)
+    token_verifier = RoleTokenVerifier(settings.roles)
     auth_settings = AuthSettings(
         # Pass these as strings rather than pre-built AnyHttpUrl values:
         # AuthSettings sets `url_preserve_empty_path`, so it keeps a
@@ -72,15 +77,16 @@ def _build_auth(
         # before the model ever sees it. The resource identifier has to match
         # the Entra Application ID URI exactly, and Entra refuses to register
         # one ending in a slash.
-        issuer_url=settings.entra.issuer,
+        issuer_url=settings.origin,
         resource_server_url=settings.resource_server_url,
         # Advertised as `scopes_supported` in the protected resource
-        # metadata, so clients know to ask Entra for this scope rather than
-        # falling back to bare OIDC scopes, and required on every request.
-        required_scopes=[settings.entra.qualified_scope],
-        # EntraTokenVerifier already checks the token's audience against
-        # settings.entra.audience, so the RFC 8707 resource indicator check
-        # below would be redundant.
+        # metadata, so clients know to ask the authorization server for these
+        # scopes rather than falling back to bare OIDC scopes, and required
+        # on every request.
+        required_scopes=list(settings.scopes),
+        # RoleTokenVerifier already checks the token's audience against the
+        # role that matched, so the RFC 8707 resource indicator check below
+        # would be redundant.
         validate_token_resource=False,
     )
     return token_verifier, auth_settings
