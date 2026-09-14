@@ -8,76 +8,67 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class EntraSettings:
-    """Where to validate access tokens against in Microsoft Entra ID.
+class RoleConfig:
+    """One issuer/audience pair whose access tokens this server accepts.
 
-    ``audience`` is the value Entra stamps into the ``aud`` claim of access
-    tokens minted for this server's exposed API. Entra defaults an app
-    registration's App ID URI to ``api://<client-id>``, so that is the
-    default here too; set it explicitly if the app registration's App ID URI
-    was customised.
+    A bearer token is accepted if it validates against at least one role: its
+    signature must verify against that issuer's JWKS, and its ``iss`` and
+    ``aud`` claims must equal the role's ``issuer`` and ``audience``.
 
-    ``scope`` is the name of the scope added under "Expose an API" (e.g.
-    ``mcp.access``), used to tell MCP clients which scope to request via this
-    server's OAuth Protected Resource Metadata.
+    ``jwks_uri`` is normally left unset, in which case it is read from
+    ``{issuer}/.well-known/openid-configuration`` the first time a token from
+    that issuer needs validating. Discovering it rather than hardcoding a
+    provider-specific keys endpoint is what lets a role point at any OIDC
+    issuer, sovereign Entra clouds (e.g. Azure Government) included; set it
+    explicitly only for an issuer that publishes no discovery document.
+
+    For Entra, ``audience`` is the app registration's Application ID URI
+    (``api://<client-id>`` unless it was customised). ``issuer`` is whichever
+    issuer the tenant actually stamps into its tokens, which is not
+    necessarily the authorization server the client talked to: an app
+    registration whose manifest leaves ``requestedAccessTokenVersion`` at its
+    default issues v1 tokens, with an issuer of
+    ``https://sts.windows.net/{tenant}/``, even for a client that
+    authenticated via the v2 endpoints.
     """
 
-    tenant_id: str
-    client_id: str
+    name: str
     audience: str
-    scope: str = "mcp.access"
-
-    @property
-    def issuer(self) -> str:
-        """The v2 issuer, used for OIDC discovery and published as this
-        server's authorization server."""
-        return f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
-
-    @property
-    def qualified_scope(self) -> str:
-        """The scope as Entra names it: the App ID URI, then the scope name.
-
-        This is the form a client must put in an authorization request's
-        ``scope`` parameter for Entra to resolve it against this app, so it
-        is also the form advertised in this server's OAuth Protected
-        Resource Metadata and the form ``AccessToken.scopes`` reports.
-        """
-        return f"{self.audience.rstrip('/')}/{self.scope}"
-
-    @property
-    def accepted_issuers(self) -> tuple[str, ...]:
-        """Issuers an access token for this tenant may legitimately carry.
-
-        Entra only stamps the v2 issuer into tokens when the app
-        registration's manifest sets ``requestedAccessTokenVersion`` to 2.
-        Left at its default, it issues v1 tokens — same audience, but an
-        issuer of ``https://sts.windows.net/{tenant}/`` — even when the
-        client authenticated via the v2 endpoints. Accepting both means no
-        manifest editing is needed to register an app for this server.
-        """
-        return (self.issuer, f"https://sts.windows.net/{self.tenant_id}/")
+    issuer: str
+    jwks_uri: str | None = None
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> EntraSettings:
-        tenant_id = _required_string(data, "tenant-id", context="entra")
-        client_id = _required_string(data, "client-id", context="entra")
-        audience = _optional_string(data, "audience", context="entra")
-        scope = _optional_string(data, "scope", context="entra")
+    def from_mapping(cls, data: dict[str, Any]) -> RoleConfig:
+        name = _required_string(data, "name", context="role")
+        context = f"role '{name}'"
         return cls(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            audience=audience or f"api://{client_id}",
-            scope=scope or "mcp.access",
+            name=name,
+            audience=_required_string(data, "audience", context=context),
+            issuer=_required_string(data, "issuer", context=context),
+            jwks_uri=_optional_string(data, "jwks-uri", context=context),
         )
 
 
 @dataclass(frozen=True)
 class Settings:
+    """This server's configuration.
+
+    ``resource_server_url``, ``origin`` and ``scopes`` are what this server
+    publishes in its OAuth Protected Resource Metadata: where this server is
+    reachable, which authorization server clients should authenticate
+    against, and which scope they should ask it for. ``roles`` is the
+    separate question of which tokens are accepted once a client comes back
+    holding one. The two are not interchangeable — a tenant can hand out
+    tokens whose issuer is not the authorization server its clients talk to.
+    """
+
     listen: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
     resource_server_url: str | None = None
-    entra: EntraSettings | None = None
+    origin: str | None = None
+    scopes: tuple[str, ...] = ()
+    roles: tuple[RoleConfig, ...] = ()
 
     @classmethod
     def from_toml(cls, path: str | Path) -> Settings:
@@ -87,10 +78,6 @@ class Settings:
         except tomllib.TOMLDecodeError as exc:
             raise ValueError(f"Invalid TOML in {path}: {exc}") from exc
 
-        entra_data = data.get("entra")
-        if entra_data is not None and not isinstance(entra_data, dict):
-            raise ValueError("entra must be a table")
-
         return cls(
             listen=_string_or_default(data, "listen", cls.listen),
             port=_int_or_default(data, "port", cls.port),
@@ -98,8 +85,39 @@ class Settings:
             resource_server_url=_optional_string(
                 data, "resource-server-url", context="top-level"
             ),
-            entra=EntraSettings.from_mapping(entra_data) if entra_data else None,
+            origin=_optional_string(data, "origin", context="top-level"),
+            scopes=_scopes(data),
+            roles=_roles(data),
         )
+
+
+def _roles(data: dict[str, Any]) -> tuple[RoleConfig, ...]:
+    raw = data.get("role")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise TypeError("role must be an array of tables ([[role]])")
+    roles = tuple(RoleConfig.from_mapping(item) for item in raw)
+    seen: set[str] = set()
+    for role in roles:
+        if role.name in seen:
+            raise ValueError(f"duplicate role '{role.name}'")
+        seen.add(role.name)
+    return roles
+
+
+def _scopes(data: dict[str, Any]) -> tuple[str, ...]:
+    raw = data.get("scopes")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TypeError("scopes must be an array of strings")
+    for scope in raw:
+        if not isinstance(scope, str):
+            raise TypeError(f"scopes entries must be strings, got {scope!r}")
+        if not scope.strip():
+            raise ValueError("scopes entries must not be empty")
+    return tuple(raw)
 
 
 def _required_string(data: dict[str, Any], key: str, *, context: str) -> str:

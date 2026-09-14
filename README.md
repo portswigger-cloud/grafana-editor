@@ -14,7 +14,7 @@ It uses:
   OAuth support
 - `starlette` as the ASGI application
 - `hypercorn` as the HTTP server
-- `pyjwt` to validate Entra-issued access tokens against the tenant's JWKS
+- `pyjwt` to validate access tokens against their issuer's JWKS
 - `pytest` for tests
 
 ## How authentication works
@@ -28,12 +28,30 @@ This server never talks to Entra to log anyone in. Instead:
    directly against Entra, in the user's browser.
 3. Entra issues an access token scoped to this server's App ID URI, which
    the client sends as a `Bearer` token on every MCP request.
-4. This server validates that token's signature (via Entra's JWKS),
-   issuer, audience and expiry, and reads the caller's email out of it.
-   Both v1 (`https://sts.windows.net/{tenant}/`) and v2
-   (`https://login.microsoftonline.com/{tenant}/v2.0`) issuers are accepted,
-   so the app registration works whether or not its manifest sets
-   `requestedAccessTokenVersion` to 2.
+4. This server validates that token's signature, issuer, audience and
+   expiry against a configured `[[role]]`, and reads the caller's email out
+   of it.
+
+Those two halves are configured separately, because they are separate
+things:
+
+- `resource-server-url`, `origin` and `scopes` are what step 1 publishes:
+  where this server is reachable, which authorization server to
+  authenticate against, and which scope to ask it for.
+- each `[[role]]` says which tokens step 4 accepts, as an `issuer`/
+  `audience` pair. Signing keys are found by reading `jwks_uri` out of
+  `{issuer}/.well-known/openid-configuration`, so nothing about the
+  provider is hardcoded; a role may set `jwks-uri` itself for an issuer
+  that publishes no discovery document. A token is accepted if it matches
+  any one role, so a second issuer just means a second `[[role]]`.
+
+An issuer is not the same thing as the authorization server clients talk
+to, and for Entra it usually isn't: an app registration whose manifest
+leaves `requestedAccessTokenVersion` at its default issues v1 tokens, whose
+`iss` is `https://sts.windows.net/{tenant}/`, even though the client
+authenticated via the v2 endpoints that `origin` names. Read the `iss`
+claim of a token your tenant actually issues rather than assuming — a
+rejected token is logged with both the expected and the received value.
 
 That means setting this up requires an **app registration in Entra ID**:
 
@@ -49,21 +67,22 @@ That means setting this up requires an **app registration in Entra ID**:
    clients this covers depends on how your MCP client obtains credentials —
    check its docs for connecting to an Entra-protected MCP server).
 
-Fill in the tenant ID, client ID, and this server's own public URL in
-`config.toml.example`. If you name the scope from step 2 anything other than
-`mcp.access`, also set `scope` under `[entra]` to match. That scope,
-qualified with the App ID URI, is both advertised as `scopes_supported` in
-this server's OAuth Protected Resource Metadata and required on every
-request. Advertising it is what stops clients falling back to requesting
-only generic OIDC scopes (`openid profile email offline_access`), none of
-which belong to this resource — which Entra rejects with AADSTS9010010.
+Fill in this server's own public URL, the tenant's v2 endpoint as `origin`,
+and the role's `issuer` and `audience` in `config.toml.example`. List the
+scope from step 2 in `scopes`, qualified with the Application ID URI
+(`api://<client-id>/mcp.access`) — that is the form Entra resolves a scope
+against. It is both advertised as `scopes_supported` in this server's OAuth
+Protected Resource Metadata and required on every request. Advertising it is
+what stops clients falling back to requesting only generic OIDC scopes
+(`openid profile email offline_access`), none of which belong to this
+resource — which Entra rejects with AADSTS9010010.
 
 ### A note on custom Application ID URIs and trailing slashes
 
 If you customise the Application ID URI to an `https://` URL under your own
-domain (rather than the default `api://<client-id>`), set `audience` under
-`[entra]` to exactly that value, and keep `resource-server-url` the same
-string too. Entra refuses to register an Application ID URI that ends in a
+domain (rather than the default `api://<client-id>`), set the role's
+`audience` to exactly that value, and keep `resource-server-url` and the
+prefix of each entry in `scopes` the same string too. Entra refuses to register an Application ID URI that ends in a
 slash, so the whole set should be slash-free.
 
 Take care not to let a trailing slash creep back in: pydantic's `AnyHttpUrl`

@@ -13,11 +13,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt import PyJWK
 from jwt.algorithms import RSAAlgorithm
 
-from grafana_editor.auth import EntraTokenVerifier
-from grafana_editor.config import EntraSettings
+from grafana_editor.auth import RoleTokenVerifier
+from grafana_editor.config import RoleConfig
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 CLIENT_ID = "22222222-2222-2222-2222-222222222222"
+ISSUER = f"https://sts.windows.net/{TENANT_ID}/"
+AUDIENCE = f"api://{CLIENT_ID}"
+ROLE = RoleConfig(name="entra", issuer=ISSUER, audience=AUDIENCE)
 
 
 @pytest.fixture(scope="module")
@@ -46,8 +49,8 @@ def signing_key(rsa_key_pair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]) -> PyJ
 def _make_token(
     private_pem: str,
     *,
-    audience: str = f"api://{CLIENT_ID}",
-    issuer: str = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
+    audience: str = AUDIENCE,
+    issuer: str = ISSUER,
     extra: dict[str, object] | None = None,
     expires_in: int = 300,
 ) -> str:
@@ -64,15 +67,15 @@ def _make_token(
     return jwt.encode(payload, private_pem, algorithm="RS256")
 
 
-def _verify(signing_key: PyJWK, token: str):
-    verifier = EntraTokenVerifier(
-        EntraSettings(
-            tenant_id=TENANT_ID, client_id=CLIENT_ID, audience=f"api://{CLIENT_ID}"
-        )
-    )
+def _verify(signing_key: PyJWK, token: str, *roles: RoleConfig):
+    verifier = RoleTokenVerifier(roles or (ROLE,))
     jwks_client = MagicMock()
     jwks_client.get_signing_key_from_jwt.return_value = signing_key
-    verifier._jwks_client = jwks_client
+    # Stand in for the client the verifier would build after discovering the
+    # issuer's JWKS URI, so no test needs to reach the network.
+    verifier._jwks_clients = {
+        issuer: jwks_client for issuer in verifier._roles_by_issuer
+    }
     return asyncio.run(verifier.verify_token(token))
 
 
@@ -131,28 +134,38 @@ def test_reports_scopes_qualified_with_the_app_id_uri(
 
     assert access_token is not None
     assert access_token.scopes == [
-        f"api://{CLIENT_ID}/mcp.access",
-        f"api://{CLIENT_ID}/other.scope",
+        f"{AUDIENCE}/mcp.access",
+        f"{AUDIENCE}/other.scope",
     ]
 
 
-def test_accepts_v1_issuer(private_pem: str, signing_key: PyJWK) -> None:
-    """An app registration left at the default requestedAccessTokenVersion
-    issues v1 tokens, which carry the sts.windows.net issuer."""
-    token = _make_token(
-        private_pem,
-        issuer=f"https://sts.windows.net/{TENANT_ID}/",
-        extra={"email": "alice@example.com"},
-    )
+def test_reports_the_role_that_matched(private_pem: str, signing_key: PyJWK) -> None:
+    token = _make_token(private_pem, extra={"email": "alice@example.com"})
     access_token = _verify(signing_key, token)
 
     assert access_token is not None
-    assert access_token.email == "alice@example.com"
+    assert access_token.role == "entra"
 
 
-def test_rejects_issuer_from_another_tenant(
+def test_accepts_a_token_matching_any_configured_role(
     private_pem: str, signing_key: PyJWK
 ) -> None:
+    """A second [[role]] is how a second issuer is accepted — for instance an
+    app registration whose manifest sets requestedAccessTokenVersion to 2 and
+    so issues tokens with the v2 issuer instead of the v1 one."""
+    v2_issuer = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0"
+    v2_role = RoleConfig(name="entra-v2", issuer=v2_issuer, audience=AUDIENCE)
+    token = _make_token(
+        private_pem, issuer=v2_issuer, extra={"email": "alice@example.com"}
+    )
+
+    access_token = _verify(signing_key, token, ROLE, v2_role)
+
+    assert access_token is not None
+    assert access_token.role == "entra-v2"
+
+
+def test_rejects_an_issuer_no_role_names(private_pem: str, signing_key: PyJWK) -> None:
     token = _make_token(
         private_pem,
         issuer="https://login.microsoftonline.com/some-other-tenant/v2.0",
@@ -176,8 +189,7 @@ def test_issuer_rejection_names_both_sides(
 
     assert "'iss'" in caplog.text
     assert "https://login.microsoftonline.com/some-other-tenant/v2.0" in caplog.text
-    assert f"https://login.microsoftonline.com/{TENANT_ID}/v2.0" in caplog.text
-    assert f"https://sts.windows.net/{TENANT_ID}/" in caplog.text
+    assert ISSUER in caplog.text
 
 
 def test_audience_rejection_names_both_sides(
@@ -194,4 +206,4 @@ def test_audience_rejection_names_both_sides(
 
     assert "'aud'" in caplog.text
     assert "api://someone-else" in caplog.text
-    assert f"api://{CLIENT_ID}" in caplog.text
+    assert AUDIENCE in caplog.text
