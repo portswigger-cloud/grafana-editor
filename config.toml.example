@@ -44,3 +44,17 @@ audience = "api://11111111-1111-1111-1111-111111111111"
 # Optional: only for an issuer that publishes no OpenID configuration
 # document, or to point at a key set other than the one it advertises.
 # jwks-uri = "https://login.microsoftonline.com/common/discovery/keys"
+
+# The Grafana instance the tools read. This server reaches it as its own
+# service account rather than as the signed-in caller, so the identity Entra
+# authenticated and the identity Grafana sees are not the same.
+[grafana]
+# The Grafana instance to query, without a trailing slash. Use the URL a
+# human would open in a browser, so that links built from it work.
+url = "https://grafana.example.internal"
+# Path to a file holding a Grafana service account token. The token is named
+# by path rather than by value so it can come from a mounted Kubernetes
+# secret; it is re-read when the file changes, so a rotation does not need a
+# restart. The service account needs the Viewer role, which carries
+# datasources:read and datasources:query, for the tools exposed today.
+service-account-token-path = "/secrets/grafana/token"
