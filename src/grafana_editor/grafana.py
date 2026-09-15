@@ -56,6 +56,28 @@ MAX_LIST_ITEMS = 2000
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DATASOURCE_CACHE_SECONDS = 60.0
+FOLDER_CACHE_SECONDS = 300.0
+
+# Grafana migrates a dashboard forward from whatever schemaVersion it is saved
+# with, so this only has to be recent enough that no migration rewrites a
+# modern panel. A caller that knows better can set its own inside `dashboard`.
+DASHBOARD_SCHEMA_VERSION = 41
+
+# Marks a dashboard as this server's, and whose it is. Written as tags rather
+# than inferred from the title prefix so that listing one person's dashboards
+# is a search Grafana can answer rather than string matching done here.
+EDITOR_TAG = "grafana-editor"
+AUTHOR_TAG_PREFIX = "author:"
+
+MAX_DASHBOARDS_LISTED = 200
+
+DASHBOARD_DEFAULTS: dict[str, Any] = {
+    "schemaVersion": DASHBOARD_SCHEMA_VERSION,
+    "editable": True,
+    "timezone": "browser",
+    "time": {"from": "now-6h", "to": "now"},
+    "panels": [],
+}
 RANGE_QUERY_TARGET_POINTS = 200
 
 # Steps a human would pick, so an auto-chosen step reads as deliberate
@@ -97,6 +119,12 @@ class Datasource:
             "is_default": self.is_default,
             "queryable": self.flavour is not None,
         }
+
+
+@dataclass(frozen=True)
+class Folder:
+    uid: str
+    title: str
 
 
 class _TokenFile:
@@ -150,6 +178,9 @@ class GrafanaClient:
         )
         self._datasources: list[Datasource] | None = None
         self._datasources_expire_at = 0.0
+        self._sandbox_folder_name = settings.sandbox_folder
+        self._folder: Folder | None = None
+        self._folder_expires_at = 0.0
 
     @property
     def base_url(self) -> str:
@@ -361,6 +392,205 @@ class GrafanaClient:
         result["step"] = params["step"]
         return result
 
+    # -- dashboards in the sandbox folder ---------------------------------
+
+    async def sandbox_folder(self, *, refresh: bool = False) -> Folder:
+        """Resolve the configured sandbox folder's title to its uid.
+
+        Cached, because every dashboard call needs it and folders are not
+        renamed often. Matched case-insensitively: the folder is named by a
+        human in the Grafana UI, so "sandbox" and "Sandbox" are the same
+        request as far as a caller is concerned.
+        """
+        if (
+            not refresh
+            and self._folder is not None
+            and time.monotonic() < self._folder_expires_at
+        ):
+            return self._folder
+        wanted = self._sandbox_folder_name
+        payload = await self._api_request(
+            "GET", "/api/search", params={"type": "dash-folder", "limit": 5000}
+        )
+        if not isinstance(payload, list):
+            raise GrafanaError(
+                f"expected a list of folders from Grafana, got {type(payload).__name__}"
+            )
+        folders = [
+            Folder(uid=str(item["uid"]), title=str(item["title"]))
+            for item in payload
+            if isinstance(item, dict) and item.get("uid") and item.get("title")
+        ]
+        matches = [f for f in folders if f.title.casefold() == wanted.casefold()]
+        if len(matches) == 1:
+            self._folder = matches[0]
+            self._folder_expires_at = time.monotonic() + FOLDER_CACHE_SECONDS
+            return matches[0]
+        if len(matches) > 1:
+            uids = ", ".join(f.uid for f in matches)
+            raise GrafanaError(
+                f"{len(matches)} folders in Grafana are titled '{wanted}' "
+                f"(uids {uids}), so which one to write to is ambiguous"
+            )
+        known = ", ".join(sorted(f.title for f in folders)) or "none"
+        raise GrafanaError(
+            f"Grafana has no folder titled '{wanted}', which is this server's "
+            f"configured sandbox-folder; the folders it does have are: {known}"
+        )
+
+    async def create_dashboard(
+        self,
+        *,
+        author: str,
+        title: str,
+        dashboard: dict[str, Any],
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        folder = await self.sandbox_folder()
+        body = _dashboard_body(author, title, dashboard)
+        payload = await self._api_request(
+            "POST",
+            "/api/dashboards/db",
+            json={
+                # uid and id are cleared rather than passed through: a
+                # dashboard object copied from an existing one still carries
+                # them, and Grafana would overwrite that dashboard instead of
+                # creating a new one.
+                "dashboard": {**body, "uid": None, "id": None},
+                "folderUid": folder.uid,
+                "message": message or f"created by {author} via grafana-editor",
+                "overwrite": False,
+            },
+        )
+        return self._saved(payload, folder, body["title"])
+
+    async def update_dashboard(
+        self,
+        *,
+        author: str,
+        uid: str,
+        dashboard: dict[str, Any],
+        title: str | None = None,
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        folder = await self.sandbox_folder()
+        current = await self._fetch_dashboard(uid)
+        meta = current.get("meta") or {}
+        existing = current.get("dashboard") or {}
+        if meta.get("folderUid") != folder.uid:
+            raise GrafanaError(
+                f"dashboard '{uid}' is in the folder "
+                f"'{meta.get('folderTitle') or meta.get('folderUid') or 'General'}', "
+                f"and this server only writes to '{folder.title}'"
+            )
+        body = _dashboard_body(
+            author,
+            # Keeping the stored title when none is given is what makes
+            # updating panels alone leave the name, and its prefix, alone.
+            title if title is not None else str(existing.get("title") or ""),
+            dashboard,
+            already_prefixed=title is None,
+        )
+        payload = await self._api_request(
+            "POST",
+            "/api/dashboards/db",
+            json={
+                "dashboard": {
+                    **body,
+                    "uid": uid,
+                    "id": existing.get("id"),
+                    # The version read back a moment ago, so a save that would
+                    # discard someone's concurrent edit in the UI fails with
+                    # Grafana's version conflict rather than winning silently.
+                    "version": existing.get("version"),
+                },
+                "folderUid": folder.uid,
+                "message": message or f"updated by {author} via grafana-editor",
+                "overwrite": False,
+            },
+        )
+        return self._saved(payload, folder, body["title"])
+
+    async def get_dashboard(self, uid: str) -> dict[str, Any]:
+        payload = await self._fetch_dashboard(uid)
+        meta = payload.get("meta") or {}
+        dashboard = payload.get("dashboard") or {}
+        folder = await self.sandbox_folder()
+        return {
+            "uid": str(dashboard.get("uid") or uid),
+            "title": dashboard.get("title"),
+            "url": self._absolute(meta.get("url")),
+            "version": dashboard.get("version"),
+            "folder": meta.get("folderTitle"),
+            # Says up front whether update_dashboard will accept this uid,
+            # rather than letting the caller find out by being refused.
+            "writable": meta.get("folderUid") == folder.uid,
+            "dashboard": dashboard,
+        }
+
+    async def list_dashboards(self, *, author: str | None = None) -> dict[str, Any]:
+        folder = await self.sandbox_folder()
+        params: dict[str, Any] = {
+            "type": "dash-db",
+            "folderUIDs": folder.uid,
+            "limit": MAX_DASHBOARDS_LISTED,
+        }
+        if author:
+            params["tag"] = f"{AUTHOR_TAG_PREFIX}{author}"
+        payload = await self._api_request("GET", "/api/search", params=params)
+        if not isinstance(payload, list):
+            raise GrafanaError(
+                f"expected a list of dashboards from Grafana, got "
+                f"{type(payload).__name__}"
+            )
+        return {
+            "folder": folder.title,
+            "dashboards": [
+                {
+                    "uid": item.get("uid"),
+                    "title": item.get("title"),
+                    "url": self._absolute(item.get("url")),
+                    "tags": item.get("tags") or [],
+                }
+                for item in payload
+                if isinstance(item, dict)
+            ],
+        }
+
+    async def _fetch_dashboard(self, uid: str) -> dict[str, Any]:
+        payload = await self._api_request(
+            "GET", f"/api/dashboards/uid/{quote(uid, safe='')}"
+        )
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("dashboard"), dict
+        ):
+            raise GrafanaError(
+                f"Grafana did not return a dashboard for uid '{uid}': "
+                f"{_truncate(str(payload))}"
+            )
+        return payload
+
+    def _saved(self, payload: Any, folder: Folder, title: str) -> dict[str, Any]:
+        """Shape Grafana's save response, which does not echo the title back."""
+        if not isinstance(payload, dict) or not payload.get("uid"):
+            raise GrafanaError(
+                f"Grafana did not confirm the dashboard was saved: "
+                f"{_truncate(str(payload))}"
+            )
+        return {
+            "uid": str(payload["uid"]),
+            "title": title,
+            "url": self._absolute(payload.get("url")),
+            "version": payload.get("version"),
+            "folder": folder.title,
+        }
+
+    def _absolute(self, url: Any) -> str | None:
+        """Turn the root-relative URL Grafana returns into one a human can open."""
+        if not isinstance(url, str) or not url:
+            return None
+        return f"{self._base_url}{url}" if url.startswith("/") else url
+
     # -- transport --------------------------------------------------------
 
     async def _datasource_request(
@@ -373,7 +603,12 @@ class GrafanaClient:
         )
 
     async def _api_request(
-        self, method: str, path: str, *, params: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
     ) -> Any:
         url = f"{self._base_url}{path}"
         try:
@@ -381,6 +616,7 @@ class GrafanaClient:
                 method,
                 url,
                 params=params,
+                json=json,
                 headers={
                     "Authorization": f"Bearer {self._token.read()}",
                     "Accept": "application/json",
@@ -400,6 +636,83 @@ class GrafanaClient:
                 f"{method} {path} on Grafana returned a body that is not JSON "
                 f"({response.headers.get('content-type', 'no content-type')}): {exc}"
             ) from exc
+
+
+def author_from_email(email: str) -> str:
+    """The part of an email address before the @, used to prefix titles."""
+    local = email.split("@", 1)[0].strip()
+    if not local:
+        raise GrafanaError(
+            f"could not read a user name out of the email address '{email}'"
+        )
+    return local
+
+
+def prefixed_title(author: str, title: str) -> str:
+    """Prefix a dashboard title with its author, without doubling the prefix.
+
+    A caller that passes a title it read back off an existing dashboard
+    already has the prefix on it, and prefixing again would give
+    "noa.resare: noa.resare: Server Temperature". Case is left alone
+    otherwise: title-casing would turn "CPU usage" into "Cpu Usage".
+    """
+    clean = " ".join(title.split())
+    if not clean:
+        raise GrafanaError("a dashboard needs a title, but the title given was empty")
+    prefix = f"{author}: "
+    if clean.casefold().startswith(prefix.casefold()):
+        return clean
+    return f"{prefix}{clean}"
+
+
+def _dashboard_body(
+    author: str,
+    title: str,
+    dashboard: dict[str, Any],
+    *,
+    already_prefixed: bool = False,
+) -> dict[str, Any]:
+    inner = _dashboard_object(dashboard)
+    body = {**DASHBOARD_DEFAULTS, **inner}
+    body["title"] = title if already_prefixed else prefixed_title(author, title)
+    body["tags"] = _dashboard_tags(author, inner.get("tags"))
+    return body
+
+
+def _dashboard_object(dashboard: Any) -> dict[str, Any]:
+    """Take the dashboard out of whatever shape the caller passed it in.
+
+    A caller holding Grafana's own save payload, or the body of a
+    ``GET /api/dashboards/uid/...`` reply, has the dashboard one level down
+    under "dashboard". Unwrapping it beats saving a dashboard whose only
+    content is a nested copy of itself, and a real dashboard object never has
+    a "dashboard" key of its own.
+    """
+    if not isinstance(dashboard, dict):
+        raise GrafanaError(
+            f"the dashboard must be a JSON object, not a {type(dashboard).__name__}"
+        )
+    inner = dashboard.get("dashboard")
+    if isinstance(inner, dict):
+        dashboard = inner
+    panels = dashboard.get("panels")
+    if panels is not None and not isinstance(panels, list):
+        raise GrafanaError(
+            f"dashboard.panels must be a list of panel objects, not a "
+            f"{type(panels).__name__}"
+        )
+    return dashboard
+
+
+def _dashboard_tags(author: str, existing: Any) -> list[str]:
+    tags = [
+        tag
+        for tag in (existing if isinstance(existing, list) else [])
+        if isinstance(tag, str)
+        and tag != EDITOR_TAG
+        and not tag.startswith(AUTHOR_TAG_PREFIX)
+    ]
+    return [*tags, EDITOR_TAG, f"{AUTHOR_TAG_PREFIX}{author}"]
 
 
 def _match_datasource(
