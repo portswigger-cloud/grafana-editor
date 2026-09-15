@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# The Grafana folder dashboards are written to. Writes go nowhere else, so this
+# is the one folder the service account needs edit permission on.
+DEFAULT_SANDBOX_FOLDER = "Sandbox"
+
 
 @dataclass(frozen=True)
 class RoleConfig:
@@ -56,10 +60,14 @@ class GrafanaSettings:
     The token is named by path rather than by value so that it can come from
     a Kubernetes secret mounted into the container, and so that it never
     appears in the config file (which is a ConfigMap in this deployment).
+
+    ``sandbox_folder`` is the title of the folder dashboards are created in,
+    matched case-insensitively against the folders Grafana reports.
     """
 
     url: str
     service_account_token_path: str
+    sandbox_folder: str = DEFAULT_SANDBOX_FOLDER
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> GrafanaSettings:
@@ -67,7 +75,12 @@ class GrafanaSettings:
         token_path = _required_string(
             data, "service-account-token-path", context="grafana"
         )
-        return cls(url=url.rstrip("/"), service_account_token_path=token_path)
+        folder = _optional_string(data, "sandbox-folder", context="grafana")
+        return cls(
+            url=url.rstrip("/"),
+            service_account_token_path=token_path,
+            sandbox_folder=folder or DEFAULT_SANDBOX_FOLDER,
+        )
 
 
 @dataclass(frozen=True)

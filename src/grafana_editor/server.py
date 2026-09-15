@@ -18,18 +18,27 @@ from starlette.routing import Mount, Route
 
 from grafana_editor.auth import RoleTokenVerifier, UserAccessToken
 from grafana_editor.config import Settings
-from grafana_editor.grafana import GrafanaClient, GrafanaError
+from grafana_editor.grafana import GrafanaClient, GrafanaError, author_from_email
 
 logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = """\
-Explore and query the datasources of one Grafana instance, on behalf of the \
-user signed in via Microsoft Entra ID SSO.
+Explore one Grafana instance's datasources and build dashboards from what is \
+there, on behalf of the user signed in via Microsoft Entra ID SSO.
 
-Use this to find out what data actually exists before writing a query or a \
-dashboard panel: list_datasources, then list_metrics / describe_metrics / \
-list_labels / list_label_values to discover what is there, then query_instant \
-or query_range to see real values.
+Find the data first, rather than guessing at metric or label names: \
+list_datasources, then list_metrics / describe_metrics / list_labels / \
+list_label_values to see what exists, then query_instant or query_range to \
+confirm a query returns what you expect.
+
+Then create_dashboard to build from those confirmed queries, and hand the \
+user the "url" it returns so they can look at it. Iterate with \
+get_dashboard and update_dashboard on that uid rather than creating another \
+dashboard each time.
+
+Dashboards are created in a sandbox folder, which is the only place this \
+server writes, and their titles are prefixed with the signed-in user's name \
+automatically.
 
 Every datasource argument takes either a datasource uid or its display name. \
 Every time argument takes an RFC 3339 timestamp, unix seconds, or a relative \
@@ -111,14 +120,7 @@ def _build_server(
     @mcp.tool()
     def whoami() -> dict[str, str]:
         """Get the email address of the currently signed-in user."""
-        access_token = get_access_token()
-        if access_token is None:
-            raise ToolError("no authenticated user is associated with this request")
-        if not isinstance(access_token, UserAccessToken):
-            raise ToolError(
-                "authentication is disabled on this server; no user is signed in"
-            )
-        return {"email": access_token.email}
+        return {"email": _caller_email()}
 
     @mcp.tool()
     async def list_datasources() -> dict[str, Any]:
@@ -281,7 +283,148 @@ def _build_server(
             grafana.query_range(datasource, expr, start=start, end=end, step=step)
         )
 
+    @mcp.tool()
+    async def create_dashboard(
+        title: Annotated[
+            str,
+            Field(
+                description=(
+                    "The dashboard's name, without any author prefix: the "
+                    "signed-in user's name is prepended automatically, so "
+                    "'Server Temperature' is saved as "
+                    "'noa.resare: Server Temperature'."
+                )
+            ),
+        ],
+        dashboard: Annotated[
+            dict[str, Any],
+            Field(
+                description=(
+                    "The Grafana dashboard object, with the panels in its "
+                    "'panels' key. Anything Grafana's dashboard JSON accepts "
+                    "works here (templating, annotations, links, rows). "
+                    "'title', 'uid', 'id' and the folder are set by this "
+                    "server and are ignored if given. Reference datasources "
+                    "by uid, from list_datasources."
+                )
+            ),
+        ],
+        message: Annotated[
+            str | None,
+            Field(description="Optional note for the dashboard's version history."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Create a dashboard in the sandbox folder and return its URL.
+
+        The reply's "url" opens the dashboard in Grafana, so it can be handed
+        to the user to look at. Iterate with update_dashboard on the uid that
+        comes back rather than creating a second dashboard.
+        """
+        author = _caller_author()
+        return await _guard(
+            grafana.create_dashboard(
+                author=author, title=title, dashboard=dashboard, message=message
+            )
+        )
+
+    @mcp.tool()
+    async def update_dashboard(
+        uid: Annotated[str, Field(description="The uid of the dashboard to replace.")],
+        dashboard: Annotated[
+            dict[str, Any],
+            Field(
+                description=(
+                    "The new dashboard object, which replaces the stored one "
+                    "outright rather than being merged into it. Read the "
+                    "current one with get_dashboard first if you mean to "
+                    "change part of it."
+                )
+            ),
+        ],
+        title: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "A new name, again without an author prefix. Omit to keep "
+                    "the dashboard's current name."
+                )
+            ),
+        ] = None,
+        message: Annotated[
+            str | None,
+            Field(description="Optional note for the dashboard's version history."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Replace a sandbox dashboard's contents and return its URL.
+
+        Refused for a dashboard outside the sandbox folder, and refused by
+        Grafana if someone has saved a newer version since this call read it.
+        """
+        author = _caller_author()
+        return await _guard(
+            grafana.update_dashboard(
+                author=author,
+                uid=uid,
+                dashboard=dashboard,
+                title=title,
+                message=message,
+            )
+        )
+
+    @mcp.tool()
+    async def get_dashboard(
+        uid: Annotated[str, Field(description="The uid of the dashboard to read.")],
+    ) -> dict[str, Any]:
+        """Read a dashboard's stored JSON, along with its URL and version.
+
+        Use this before update_dashboard to change part of a dashboard, and to
+        see what Grafana actually saved: it normalises and migrates what it is
+        given, so the stored JSON is not always byte-for-byte what was sent.
+        The reply's "writable" says whether update_dashboard will accept it.
+        """
+        return await _guard(grafana.get_dashboard(uid))
+
+    @mcp.tool()
+    async def list_dashboards(
+        mine_only: Annotated[
+            bool,
+            Field(
+                description=(
+                    "True to list only the signed-in user's own dashboards, "
+                    "False for everything in the sandbox folder."
+                )
+            ),
+        ] = True,
+    ) -> dict[str, Any]:
+        """List the dashboards in the sandbox folder.
+
+        The sandbox is shared, so this is how to find a dashboard created in
+        an earlier session rather than making a near-duplicate of it.
+        """
+        author = _caller_author() if mine_only else None
+        return await _guard(grafana.list_dashboards(author=author))
+
     return mcp, grafana
+
+
+def _caller_email() -> str:
+    """The signed-in user's email, or a ToolError saying why there isn't one."""
+    access_token = get_access_token()
+    if access_token is None:
+        raise ToolError("no authenticated user is associated with this request")
+    if not isinstance(access_token, UserAccessToken):
+        raise ToolError(
+            "authentication is disabled on this server; no user is signed in"
+        )
+    return access_token.email
+
+
+def _caller_author() -> str:
+    """The name a dashboard title is prefixed with, from the caller's email."""
+    try:
+        return author_from_email(_caller_email())
+    except GrafanaError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 async def _guard[T](awaitable: Awaitable[T]) -> T:

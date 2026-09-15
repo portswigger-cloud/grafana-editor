@@ -58,3 +58,8 @@ url = "https://grafana.example.internal"
 # restart. The service account needs the Viewer role, which carries
 # datasources:read and datasources:query, for the tools exposed today.
 service-account-token-path = "/secrets/grafana/token"
+# Optional: the folder dashboards are created in, matched case-insensitively
+# against Grafana's folder titles. Defaults to "Sandbox". This is the only
+# folder written to, so it is the only one the service account needs edit
+# permission on.
+# sandbox-folder = "Sandbox"

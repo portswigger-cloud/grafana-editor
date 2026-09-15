@@ -3,8 +3,9 @@
 An MCP server for editing Grafana, authenticated via Microsoft Entra ID SSO.
 
 It exposes tools for exploring and querying one Grafana instance's
-datasources, so that a client can find out what data actually exists before
-writing a query or a dashboard panel. Dashboard writing is still to come.
+datasources, and for building dashboards from what is there. A client can
+find out what data actually exists, confirm a query returns it, then create a
+dashboard and hand the user a link to look at.
 
 Callers are authenticated as themselves against Entra ID; calls to Grafana
 are then made with a single Grafana service account token, so Grafana sees
@@ -106,8 +107,10 @@ re-read whenever its size or mtime changes, so rotating the secret does not
 need a restart.
 
 Create the token in Grafana under **Administration → Users and access →
-Service accounts**. For the tools exposed today it needs the **Viewer** role,
-which carries `datasources:read` and `datasources:query`.
+Service accounts**. It needs the **Viewer** role, which carries
+`datasources:read` and `datasources:query`, plus **Edit** permission on the
+sandbox folder — granted on the folder itself under its **Permissions** tab,
+rather than by giving the service account the Editor role globally.
 
 Datasource queries go through Grafana's datasource proxy
 (`/api/datasources/proxy/uid/...`), so Grafana's own datasource
@@ -160,6 +163,14 @@ Tools:
 - `query_instant` — evaluate PromQL or LogQL at a single instant.
 - `query_range` — evaluate PromQL or LogQL over a window, which is the shape
   a time series panel draws.
+- `create_dashboard` — create a dashboard in the sandbox folder, returning the
+  URL to open it at.
+- `update_dashboard` — replace a sandbox dashboard's contents, for iterating
+  on one rather than creating another.
+- `get_dashboard` — the stored dashboard JSON, its URL and version, and
+  whether this server may write to it.
+- `list_dashboards` — what is in the sandbox folder, by default only the
+  caller's own.
 
 Three conventions run through all of them, so that a caller does not have to
 carry Grafana's quirks:
@@ -177,6 +188,39 @@ carry Grafana's quirks:
 Large results are truncated rather than returned in full, and a truncated
 result carries a `truncated` field saying what was dropped and how to ask for
 less.
+
+## Writing dashboards
+
+Two things are true of every dashboard this server writes, and neither is up
+to the caller.
+
+**It goes in the sandbox folder.** `grafana.sandbox-folder` names it
+(default `Sandbox`), and nothing else is written to. `update_dashboard`
+checks the folder a dashboard is actually in before replacing it, so a uid
+from elsewhere is refused here rather than at Grafana's permission check.
+
+**Its title is prefixed with the caller's name**, taken from the part of
+their SSO email address before the `@`: a `create_dashboard` for
+`Server Temperature` by `noa.resare@portswigger.net` is saved as
+`noa.resare: Server Temperature`. The sandbox is shared, so the prefix is
+what makes it obvious whose a dashboard is. The rest of the title is passed
+through exactly as given — capitalisation included, since title-casing would
+turn `CPU usage` into `Cpu usage` — and a title that already carries the
+prefix is not prefixed twice. The same name also goes on as an
+`author:<name>` tag, which is what lets `list_dashboards` filter by author
+without matching on titles.
+
+Beyond that the caller supplies the Grafana dashboard object itself, so
+anything Grafana's dashboard JSON supports is reachable. The server sets
+`title`, `uid`, `id` and the folder, fills in `schemaVersion`, `time`,
+`timezone` and `editable` when they are absent, and passes everything else
+through.
+
+`update_dashboard` replaces a dashboard rather than merging into it, and
+sends the version it just read, so a save that would discard an edit someone
+made in the Grafana UI meanwhile fails with Grafana's version conflict
+instead of winning silently. To change part of a dashboard, read it with
+`get_dashboard` first.
 
 ## Test it
 

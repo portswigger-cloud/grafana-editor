@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
+from mcp.server.auth.middleware.auth_context import (
+    AuthenticatedUser,
+    auth_context_var,
+)
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult
 from starlette.testclient import TestClient
 
-from grafana_editor.auth import _scopes_from_claims
+from grafana_editor.auth import UserAccessToken, _scopes_from_claims
 from grafana_editor.config import GrafanaSettings, RoleConfig, Settings
 from grafana_editor.grafana import GrafanaClient
 from grafana_editor.server import _build_auth, create_app, create_server
@@ -116,7 +122,7 @@ def _client_against(tmp_path: Path, handler: object) -> GrafanaClient:
 
 
 @pytest.mark.anyio
-async def test_exposes_the_query_tools(tmp_path: Path) -> None:
+async def test_exposes_the_query_and_dashboard_tools(tmp_path: Path) -> None:
     server = create_server(_settings(tmp_path), disable_auth=True)
 
     names = {tool.name for tool in await server.list_tools()}
@@ -130,6 +136,10 @@ async def test_exposes_the_query_tools(tmp_path: Path) -> None:
         "list_label_values",
         "query_instant",
         "query_range",
+        "create_dashboard",
+        "update_dashboard",
+        "get_dashboard",
+        "list_dashboards",
     }
 
 
@@ -174,3 +184,70 @@ async def test_a_grafana_failure_reaches_the_caller_as_a_tool_error(
     # "internal error", which would hide the reason from the caller.
     with pytest.raises(ToolError, match="Access denied to datasource"):
         await server.call_tool("list_metrics", {"datasource": "Mimir"})
+
+
+def _signed_in(email: str) -> AuthenticatedUser:
+    """An auth context like the one AuthContextMiddleware sets per request."""
+    return AuthenticatedUser(
+        UserAccessToken(
+            token="t",
+            client_id="c",
+            scopes=[],
+            expires_at=None,
+            email=email,
+            role="entra",
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_a_created_dashboard_is_titled_after_the_signed_in_user(
+    tmp_path: Path,
+) -> None:
+    saved: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/search":
+            return httpx.Response(
+                200, json=[{"uid": "sandbox-uid", "title": "Sandbox"}]
+            )
+        saved.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"uid": "new-uid", "url": "/d/new-uid/x", "version": 1}
+        )
+
+    server = create_server(
+        _settings(tmp_path),
+        disable_auth=True,
+        grafana_client=_client_against(tmp_path, handler),
+    )
+
+    token = auth_context_var.set(_signed_in("noa.resare@portswigger.net"))
+    try:
+        result = await server.call_tool(
+            "create_dashboard",
+            {"title": "Server Temperature", "dashboard": {"panels": []}},
+        )
+    finally:
+        auth_context_var.reset(token)
+
+    assert isinstance(result, CallToolResult)
+    assert result.structured_content is not None
+    assert result.structured_content["title"] == "noa.resare: Server Temperature"
+    assert result.structured_content["url"] == (
+        "https://grafana.example.com/d/new-uid/x"
+    )
+    assert saved[-1]["dashboard"]["title"] == "noa.resare: Server Temperature"
+    assert saved[-1]["folderUid"] == "sandbox-uid"
+
+
+@pytest.mark.anyio
+async def test_creating_a_dashboard_needs_a_signed_in_user(tmp_path: Path) -> None:
+    server = create_server(_settings(tmp_path), disable_auth=True)
+
+    # No auth context, as when the server runs with --disable-auth: there is no
+    # user to name the dashboard after, so this fails rather than inventing one.
+    with pytest.raises(ToolError, match="no authenticated user"):
+        await server.call_tool(
+            "create_dashboard", {"title": "Nameless", "dashboard": {}}
+        )
