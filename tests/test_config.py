@@ -25,7 +25,48 @@ def test_defaults(tmp_path: Path) -> None:
     assert settings.log_level == "INFO"
     assert settings.origin is None
     assert settings.scopes == ()
+    assert settings.offline_access is True
     assert settings.roles == ()
+
+
+def test_offline_access_is_advertised_alongside_the_required_scopes(
+    tmp_path: Path,
+) -> None:
+    settings = Settings.from_toml(
+        _write(tmp_path, 'scopes = ["api://app-id/mcp.access"]\n')
+    )
+
+    assert settings.scopes == ("api://app-id/mcp.access",)
+    assert settings.advertised_scopes == ("api://app-id/mcp.access", "offline_access")
+
+
+def test_offline_access_can_be_turned_off(tmp_path: Path) -> None:
+    settings = Settings.from_toml(
+        _write(
+            tmp_path,
+            'scopes = ["api://app-id/mcp.access"]\noffline-access = false\n',
+        )
+    )
+
+    assert settings.advertised_scopes == ("api://app-id/mcp.access",)
+
+
+def test_offline_access_is_not_advertised_twice(tmp_path: Path) -> None:
+    """An issuer that wants it required as well as advertised can list it in
+    `scopes`; it should not then appear twice."""
+    settings = Settings.from_toml(
+        _write(tmp_path, 'scopes = ["api://app-id/mcp.access", "offline_access"]\n')
+    )
+
+    assert settings.advertised_scopes == (
+        "api://app-id/mcp.access",
+        "offline_access",
+    )
+
+
+def test_rejects_a_non_boolean_offline_access(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="offline-access must be a boolean"):
+        Settings.from_toml(_write(tmp_path, 'offline-access = "yes"\n'))
 
 
 def test_reads_metadata_and_roles(tmp_path: Path) -> None:
