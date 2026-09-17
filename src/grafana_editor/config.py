@@ -95,6 +95,9 @@ class Settings:
     holding one. The two are not interchangeable — a tenant can hand out
     tokens whose issuer is not the authorization server its clients talk to.
 
+    ``offline_access`` asks clients to request a refresh token as well; see
+    ``advertised_scopes``.
+
     ``grafana`` is unrelated to any of that: it is the Grafana instance whose
     data the tools read, which this server reaches as its own service account
     rather than as the caller.
@@ -106,8 +109,30 @@ class Settings:
     resource_server_url: str | None = None
     origin: str | None = None
     scopes: tuple[str, ...] = ()
+    offline_access: bool = True
     roles: tuple[RoleConfig, ...] = ()
     grafana: GrafanaSettings | None = None
+
+    @property
+    def advertised_scopes(self) -> tuple[str, ...]:
+        """What clients are told to ask for, which is more than is required.
+
+        A client takes the ``scope`` of its authorization request from this
+        server's ``scopes_supported`` (RFC 9728 metadata is the highest
+        priority source it has), so that list is also the only chance this
+        server gets to ask for ``offline_access``. Without it Entra returns
+        an access token and no refresh token, and the client is locked out
+        an hour later when the access token expires, with no way back except
+        a fresh interactive authorization.
+
+        ``offline_access`` belongs to the authorization server rather than to
+        this resource, so it is advertised but never required: it does not
+        appear in the ``scp`` of a token minted for our audience, and a token
+        is no less valid for that.
+        """
+        if not self.offline_access or "offline_access" in self.scopes:
+            return self.scopes
+        return (*self.scopes, "offline_access")
 
     @classmethod
     def from_toml(cls, path: str | Path) -> Settings:
@@ -126,6 +151,7 @@ class Settings:
             ),
             origin=_optional_string(data, "origin", context="top-level"),
             scopes=_scopes(data),
+            offline_access=_bool_or_default(data, "offline-access", cls.offline_access),
             roles=_roles(data),
             grafana=_grafana(data),
         )
@@ -189,6 +215,13 @@ def _string_or_default(data: dict[str, Any], key: str, default: str) -> str:
     value = data.get(key, default)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be a non-empty string")
+    return value
+
+
+def _bool_or_default(data: dict[str, Any], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{key} must be a boolean, not a {type(value).__name__}")
     return value
 
 

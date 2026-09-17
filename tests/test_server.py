@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,35 @@ def test_protected_resource_metadata_has_no_trailing_slash(tmp_path: Path) -> No
     # Without this, MCP clients have no way to know which scope to request
     # on this resource and fall back to bare OIDC scopes, which Entra
     # rejects with AADSTS9010010 just the same as a resource/scope mismatch.
+    assert body["scopes_supported"] == [SCOPE, "offline_access"]
+
+
+def test_metadata_asks_for_offline_access_without_requiring_it(
+    tmp_path: Path,
+) -> None:
+    """A client requests the scopes advertised here and nothing more, so
+    leaving `offline_access` out of them means Entra hands back no refresh
+    token and the client is locked out an hour later. It must not be required
+    per request, though: it is the authorization server's scope, so it never
+    appears in the `scp` of a token minted for our audience, and requiring it
+    would 403 every request with `insufficient_scope`."""
+    settings = _settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        advertised = client.get("/.well-known/oauth-protected-resource").json()
+    _, auth_settings = _build_auth(settings, False)
+
+    assert "offline_access" in advertised["scopes_supported"]
+    assert auth_settings is not None
+    assert auth_settings.required_scopes == [SCOPE]
+
+
+def test_offline_access_can_be_turned_off(tmp_path: Path) -> None:
+    settings = replace(_settings(tmp_path), offline_access=False)
+
+    with TestClient(create_app(settings)) as client:
+        body = client.get("/.well-known/oauth-protected-resource").json()
+
     assert body["scopes_supported"] == [SCOPE]
 
 

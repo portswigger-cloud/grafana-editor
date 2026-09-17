@@ -82,6 +82,32 @@ what stops clients falling back to requesting only generic OIDC scopes
 (`openid profile email offline_access`), none of which belong to this
 resource — which Entra rejects with AADSTS9010010.
 
+### Staying signed in past the first hour
+
+One of those generic scopes is load-bearing, though: `offline_access` is what
+makes Entra return a **refresh token** alongside the access token. A client
+takes the `scope` of its authorization request from `scopes_supported` (RFC
+9728 metadata is the highest-priority source it has) and asks for nothing
+else, so advertising only `mcp.access` gets a bare access token. Entra's
+default access-token lifetime is 60–75 minutes, after which the client has
+nothing to refresh with and the connection can only be restored by
+authorizing again from scratch — which looks like being logged out after an
+hour and having to disconnect and reconnect the connector.
+
+So `offline_access` is advertised in `scopes_supported` on top of whatever
+`scopes` lists, and is **not** added to the scopes required per request: it
+belongs to the authorization server rather than to this resource, so it never
+appears in the `scp` claim of a token minted for our audience, and requiring
+it would reject every request with `insufficient_scope`. Those two lists
+being different is why this server publishes the metadata document itself
+rather than letting the SDK derive it from `AuthSettings.required_scopes`,
+which does both jobs with one list.
+
+Set `offline-access = false` to stop advertising it, for an authorization
+server that rejects the scope outright. Expect the authorization prompt to
+ask for consent explicitly the first time, as OIDC requires for
+`offline_access`.
+
 ### A note on custom Application ID URIs and trailing slashes
 
 If you customise the Application ID URI to an `https://` URL under your own

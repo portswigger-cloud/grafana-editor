@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.routes import create_protected_resource_routes
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -472,10 +473,10 @@ def _build_auth(
         # one ending in a slash.
         issuer_url=settings.origin,
         resource_server_url=settings.resource_server_url,
-        # Advertised as `scopes_supported` in the protected resource
-        # metadata, so clients know to ask the authorization server for these
-        # scopes rather than falling back to bare OIDC scopes, and required
-        # on every request.
+        # Required on every request. The SDK would also advertise these as
+        # `scopes_supported`, but the two lists are not the same: clients are
+        # asked for `offline_access` on top, which no token for our audience
+        # carries. `_metadata_routes` publishes the wider list instead.
         required_scopes=list(settings.scopes),
         # RoleTokenVerifier already checks the token's audience against the
         # role that matched, so the RFC 8707 resource indicator check below
@@ -492,6 +493,32 @@ def _build_grafana(settings: Settings) -> GrafanaClient:
             "required in the config file"
         )
     return GrafanaClient(settings.grafana)
+
+
+def _metadata_routes(settings: Settings, *, disable_auth: bool) -> list[Route]:
+    """This server's OAuth Protected Resource Metadata, RFC 9728.
+
+    MCPServer publishes this document itself, but only ever with
+    `AuthSettings.required_scopes` as its `scopes_supported`, and the scopes
+    to advertise are deliberately not the scopes to require — see
+    `Settings.advertised_scopes`. Routes listed here are matched before the
+    mounted MCP app, so this one answers and the SDK's equivalent never sees
+    a request.
+    """
+    if disable_auth:
+        return []
+    # Checked by `_build_auth`, which runs first; narrowing for the type
+    # checker rather than for a case that can happen.
+    assert settings.resource_server_url is not None
+    assert settings.origin is not None
+    return create_protected_resource_routes(
+        # Plain strings for the same reason `_build_auth` passes them: the
+        # metadata model preserves a path-less URL's slash-free form, which
+        # building an AnyHttpUrl here would undo.
+        resource_url=settings.resource_server_url,  # ty: ignore[invalid-argument-type]
+        authorization_servers=[settings.origin],  # ty: ignore[invalid-argument-type]
+        scopes_supported=list(settings.advertised_scopes),
+    )
 
 
 def create_app(
@@ -518,6 +545,7 @@ def create_app(
     return Starlette(
         routes=[
             Route("/healthz", health),
+            *_metadata_routes(settings, disable_auth=disable_auth),
             Mount(
                 "/",
                 app=mcp.streamable_http_app(
