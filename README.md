@@ -123,6 +123,22 @@ form) rather than URLs we built ourselves. A mismatch here shows up as an
 `aud` claim that doesn't match `audience` — the rejection log names both
 values.
 
+## TLS
+
+By default grafana-editor listens for plain HTTP. Setting `tls-cert-path` and
+`tls-key-path` to PEM files holding the certificate (chain) and private key
+makes it listen for HTTPS instead, which lets clients use HTTP/2. Either both
+are set or neither is; setting only one is a startup error.
+
+With TLS configured the port defaults to 8443 instead of 8000 (an explicit
+`port` still wins). The process runs as non-root, so it can't bind 443
+itself; have the Kubernetes Service expose 443 and forward to 8443.
+
+```toml
+tls-cert-path = "/etc/grafana-editor/tls.crt"
+tls-key-path = "/etc/grafana-editor/tls.key"
+```
+
 ## How it talks to Grafana
 
 Every Grafana call carries a bearer token read from the file named by

@@ -3,6 +3,10 @@
 
 listen = "0.0.0.0"
 port = 8000
+# Serve https (and so HTTP/2) instead of http. PEM files; set both or neither.
+# With these set, port defaults to 8443 rather than 8000.
+# tls-cert-path = "/etc/grafana-editor/tls.crt"
+# tls-key-path = "/etc/grafana-editor/tls.key"
 log-level = "INFO"
 
 # What this server publishes in its OAuth Protected Resource Metadata, which

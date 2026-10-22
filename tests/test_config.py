@@ -176,3 +176,39 @@ def test_rejects_role_as_a_plain_table(tmp_path: Path) -> None:
 def test_rejects_invalid_log_level(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="log-level"):
         Settings.from_toml(_write(tmp_path, 'log-level = "TRACE"'))
+
+
+def test_tls_paths_are_parsed(tmp_path: Path) -> None:
+    settings = Settings.from_toml(
+        _write(tmp_path, 'tls-cert-path = "/tls/crt"\ntls-key-path = "/tls/key"\n')
+    )
+
+    assert settings.tls_cert_path == "/tls/crt"
+    assert settings.tls_key_path == "/tls/key"
+    assert settings.port == 8443
+
+
+def test_explicit_port_wins_over_the_tls_default(tmp_path: Path) -> None:
+    settings = Settings.from_toml(
+        _write(
+            tmp_path,
+            'port = 9000\ntls-cert-path = "/tls/crt"\ntls-key-path = "/tls/key"\n',
+        )
+    )
+
+    assert settings.port == 9000
+
+
+def test_tls_is_disabled_by_default(tmp_path: Path) -> None:
+    settings = Settings.from_toml(_write(tmp_path, ""))
+
+    assert settings.tls_cert_path is None
+    assert settings.tls_key_path is None
+
+
+@pytest.mark.parametrize("key", ["tls-cert-path", "tls-key-path"])
+def test_tls_rejects_only_one_path(tmp_path: Path, key: str) -> None:
+    with pytest.raises(ValueError, match="must be set together") as excinfo:
+        Settings.from_toml(_write(tmp_path, f'{key} = "/tls/file"\n'))
+
+    assert "/tls/file" in str(excinfo.value)
