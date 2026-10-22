@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncGenerator, Awaitable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
@@ -532,7 +532,7 @@ def create_app(
     )
 
     @asynccontextmanager
-    async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    async def lifespan(app: Starlette) -> AsyncGenerator[None]:
         try:
             async with mcp.session_manager.run():
                 yield
