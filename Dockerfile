@@ -24,6 +24,6 @@ COPY --from=builder /python /python
 COPY --from=builder /deps-venv /venv
 COPY --from=builder /venv /venv
 
-EXPOSE 8000
+EXPOSE 8000 8443
 USER nonroot
 ENTRYPOINT ["/venv/bin/grafana-editor"]

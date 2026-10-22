@@ -4,7 +4,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 # The Grafana folder dashboards are written to. Writes go nowhere else, so this
 # is the one folder the service account needs edit permission on.
@@ -105,6 +105,9 @@ class Settings:
 
     listen: str = "0.0.0.0"
     port: int = 8000
+    tls_port: ClassVar[int] = 8443
+    tls_cert_path: str | None = None
+    tls_key_path: str | None = None
     log_level: str = "INFO"
     resource_server_url: str | None = None
     origin: str | None = None
@@ -142,9 +145,22 @@ class Settings:
         except tomllib.TOMLDecodeError as exc:
             raise ValueError(f"Invalid TOML in {path}: {exc}") from exc
 
+        tls_cert_path = _optional_string(data, "tls-cert-path", context="top-level")
+        tls_key_path = _optional_string(data, "tls-key-path", context="top-level")
+        if (tls_cert_path is None) != (tls_key_path is None):
+            raise ValueError(
+                "tls-cert-path and tls-key-path must be set together, but "
+                f"tls-cert-path is {tls_cert_path!r} and "
+                f"tls-key-path is {tls_key_path!r}"
+            )
+
         return cls(
             listen=_string_or_default(data, "listen", cls.listen),
-            port=_int_or_default(data, "port", cls.port),
+            port=_int_or_default(
+                data, "port", cls.tls_port if tls_cert_path else cls.port
+            ),
+            tls_cert_path=tls_cert_path,
+            tls_key_path=tls_key_path,
             log_level=_log_level_or_default(data, "log-level", cls.log_level),
             resource_server_url=_optional_string(
                 data, "resource-server-url", context="top-level"
