@@ -74,3 +74,12 @@ service-account-token-path = "/secrets/grafana/token"
 # folder written to, so it is the only one the service account needs edit
 # permission on.
 # sandbox-folder = "Sandbox"
+
+# Optional: export trace spans to an OTLP gRPC collector. Without this table
+# no spans leave the process.
+# [traces]
+# http:// dials the collector without TLS, https:// with it.
+# endpoint = "http://otel-collector.observability:4317"
+# Request paths, matched exactly, that produce no spans (they are still
+# logged).
+# excluded-paths = ["/healthz"]

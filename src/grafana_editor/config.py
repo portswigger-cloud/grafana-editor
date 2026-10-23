@@ -5,6 +5,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 # The Grafana folder dashboards are written to. Writes go nowhere else, so this
 # is the one folder the service account needs edit permission on.
@@ -84,6 +85,34 @@ class GrafanaSettings:
 
 
 @dataclass(frozen=True)
+class TracesSettings:
+    """Where spans are exported, and which requests produce none.
+
+    ``endpoint`` is an OTLP gRPC collector, e.g. ``http://otel-collector:4317``;
+    an ``http`` URL is dialled without TLS and an ``https`` one with it.
+    ``excluded_paths`` are request paths, matched exactly, that are not traced
+    at all — health probes, typically — though they are still logged.
+    """
+
+    endpoint: str
+    excluded_paths: frozenset[str] = frozenset()
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> TracesSettings:
+        endpoint = _required_string(data, "endpoint", context="traces")
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                "traces.endpoint must be an http:// or https:// URL with a "
+                f"host, such as http://otel-collector:4317, not {endpoint!r}"
+            )
+        return cls(
+            endpoint=endpoint,
+            excluded_paths=frozenset(_excluded_paths(data)),
+        )
+
+
+@dataclass(frozen=True)
 class Settings:
     """This server's configuration.
 
@@ -94,6 +123,8 @@ class Settings:
     separate question of which tokens are accepted once a client comes back
     holding one. The two are not interchangeable — a tenant can hand out
     tokens whose issuer is not the authorization server its clients talk to.
+
+    ``traces`` says where to export spans; unset, no spans leave the process.
 
     ``offline_access`` asks clients to request a refresh token as well; see
     ``advertised_scopes``.
@@ -109,6 +140,7 @@ class Settings:
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
     log_level: str = "INFO"
+    traces: TracesSettings | None = None
     resource_server_url: str | None = None
     origin: str | None = None
     scopes: tuple[str, ...] = ()
@@ -162,6 +194,7 @@ class Settings:
             tls_cert_path=tls_cert_path,
             tls_key_path=tls_key_path,
             log_level=_log_level_or_default(data, "log-level", cls.log_level),
+            traces=_traces(data),
             resource_server_url=_optional_string(
                 data, "resource-server-url", context="top-level"
             ),
@@ -180,6 +213,31 @@ def _grafana(data: dict[str, Any]) -> GrafanaSettings | None:
     if not isinstance(raw, dict):
         raise TypeError(f"grafana must be a table, not a {type(raw).__name__}")
     return GrafanaSettings.from_mapping(raw)
+
+
+def _traces(data: dict[str, Any]) -> TracesSettings | None:
+    raw = data.get("traces")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"traces must be a table, not a {type(raw).__name__}")
+    return TracesSettings.from_mapping(raw)
+
+
+def _excluded_paths(data: dict[str, Any]) -> list[str]:
+    raw = data.get("excluded-paths", [])
+    if not isinstance(raw, list):
+        raise TypeError(
+            "traces.excluded-paths must be an array of strings, "
+            f"not a {type(raw).__name__}"
+        )
+    for path in raw:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError(
+                "traces.excluded-paths entries must be strings starting with "
+                f"'/', such as '/healthz', not {path!r}"
+            )
+    return raw
 
 
 def _roles(data: dict[str, Any]) -> tuple[RoleConfig, ...]:

@@ -10,6 +10,7 @@ from hypercorn.config import Config as HypercornConfig
 
 from grafana_editor.config import Settings
 from grafana_editor.server import create_app
+from grafana_editor.telemetry import configure_tracing
 
 DEFAULT_CONFIG_PATH = "/config/grafana-editor.toml"
 LOG_FORMAT = "[%(asctime)s] [%(process)d] [%(levelname)s] %(name)s: %(message)s"
@@ -56,7 +57,12 @@ def main(config_path: str, disable_auth: bool) -> None:
     settings = Settings.from_toml(config_path)
     configure_logging(settings.log_level)
     logger.info("Starting grafana-editor")
-    asyncio.run(run(settings, disable_auth))
+    provider = configure_tracing(settings.traces.endpoint) if settings.traces else None
+    try:
+        asyncio.run(run(settings, disable_auth))
+    finally:
+        if provider is not None:
+            provider.shutdown()
 
 
 def configure_logging(log_level: str) -> None:

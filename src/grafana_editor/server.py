@@ -13,6 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
@@ -20,6 +21,7 @@ from starlette.routing import Mount, Route
 from grafana_editor.auth import RoleTokenVerifier, UserAccessToken
 from grafana_editor.config import Settings
 from grafana_editor.grafana import GrafanaClient, GrafanaError, author_from_email
+from grafana_editor.telemetry import RequestLoggingMiddleware, traced_tool
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +121,13 @@ def _build_server(
     )
 
     @mcp.tool()
+    @traced_tool
     def whoami() -> dict[str, str]:
         """Get the email address of the currently signed-in user."""
         return {"email": _caller_email()}
 
     @mcp.tool()
+    @traced_tool
     async def list_datasources() -> dict[str, Any]:
         """List the datasources configured in Grafana.
 
@@ -139,6 +143,7 @@ def _build_server(
         }
 
     @mcp.tool()
+    @traced_tool
     async def list_metrics(
         datasource: Datasource,
         selector: PromSelector = None,
@@ -156,6 +161,7 @@ def _build_server(
         )
 
     @mcp.tool()
+    @traced_tool
     async def describe_metrics(
         datasource: Datasource,
         metric: Annotated[
@@ -177,6 +183,7 @@ def _build_server(
         return await _guard(grafana.describe_metrics(datasource, metric))
 
     @mcp.tool()
+    @traced_tool
     async def list_labels(
         datasource: Datasource,
         selector: PromSelector = None,
@@ -193,6 +200,7 @@ def _build_server(
         )
 
     @mcp.tool()
+    @traced_tool
     async def list_label_values(
         datasource: Datasource,
         label: Annotated[
@@ -222,6 +230,7 @@ def _build_server(
         )
 
     @mcp.tool()
+    @traced_tool
     async def query_instant(
         datasource: Datasource,
         expr: Annotated[
@@ -251,6 +260,7 @@ def _build_server(
         return await _guard(grafana.query_instant(datasource, expr, at=at))
 
     @mcp.tool()
+    @traced_tool
     async def query_range(
         datasource: Datasource,
         expr: Annotated[
@@ -285,6 +295,7 @@ def _build_server(
         )
 
     @mcp.tool()
+    @traced_tool
     async def create_dashboard(
         title: Annotated[
             str,
@@ -329,6 +340,7 @@ def _build_server(
         )
 
     @mcp.tool()
+    @traced_tool
     async def update_dashboard(
         uid: Annotated[str, Field(description="The uid of the dashboard to replace.")],
         dashboard: Annotated[
@@ -373,6 +385,7 @@ def _build_server(
         )
 
     @mcp.tool()
+    @traced_tool
     async def get_dashboard(
         uid: Annotated[str, Field(description="The uid of the dashboard to read.")],
     ) -> dict[str, Any]:
@@ -386,6 +399,7 @@ def _build_server(
         return await _guard(grafana.get_dashboard(uid))
 
     @mcp.tool()
+    @traced_tool
     async def list_dashboards(
         mine_only: Annotated[
             bool,
@@ -552,6 +566,14 @@ def create_app(
                     host=settings.listen, json_response=True, stateless_http=True
                 ),
             ),
+        ],
+        middleware=[
+            Middleware(
+                RequestLoggingMiddleware,
+                excluded_paths=(
+                    settings.traces.excluded_paths if settings.traces else frozenset()
+                ),
+            )
         ],
         lifespan=lifespan,
     )

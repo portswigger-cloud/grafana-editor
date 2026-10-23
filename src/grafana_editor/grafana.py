@@ -30,8 +30,11 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from opentelemetry import propagate
+from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from grafana_editor.config import GrafanaSettings
+from grafana_editor.telemetry import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -611,19 +614,36 @@ class GrafanaClient:
         json: dict[str, Any] | None = None,
     ) -> Any:
         url = f"{self._base_url}{path}"
-        try:
-            response = await self._http.request(
-                method,
-                url,
-                params=params,
-                json=json,
-                headers={
-                    "Authorization": f"Bearer {self._token.read()}",
-                    "Accept": "application/json",
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise GrafanaError(f"{method} {path} on Grafana failed: {exc}") from exc
+        headers = {
+            "Authorization": f"Bearer {self._token.read()}",
+            "Accept": "application/json",
+        }
+        start = time.monotonic()
+        with tracer.start_as_current_span(
+            f"grafana {method}",
+            kind=SpanKind.CLIENT,
+            attributes={"http.request.method": method, "url.full": url},
+        ) as span:
+            propagate.inject(headers)
+            try:
+                response = await self._http.request(
+                    method, url, params=params, json=json, headers=headers
+                )
+            except httpx.HTTPError as exc:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR))
+                logger.warning("Grafana %s %s failed: %s", method, path, exc)
+                raise GrafanaError(f"{method} {path} on Grafana failed: {exc}") from exc
+            span.set_attribute("http.response.status_code", response.status_code)
+            if response.status_code >= 400:
+                span.set_status(Status(StatusCode.ERROR))
+        logger.debug(
+            "Grafana %s %s returned %d in %.1fms",
+            method,
+            path,
+            response.status_code,
+            (time.monotonic() - start) * 1000,
+        )
         if response.status_code >= 400:
             raise GrafanaError(
                 f"{method} {path} on Grafana returned "
