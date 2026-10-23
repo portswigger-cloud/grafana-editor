@@ -216,6 +216,13 @@ def _grafana(data: dict[str, Any]) -> GrafanaSettings | None:
 
 
 def _traces(data: dict[str, Any]) -> TracesSettings | None:
+    # An earlier version read this top-level key. Ignoring it now would leave
+    # a config that still sets it running without the traces it asks for.
+    if "traces-endpoint" in data:
+        raise ValueError(
+            "traces-endpoint is no longer supported; move it into a [traces] "
+            f"table as endpoint = {data['traces-endpoint']!r}"
+        )
     raw = data.get("traces")
     if raw is None:
         return None

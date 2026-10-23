@@ -57,6 +57,16 @@ def test_traces_excludes_no_paths_by_default(tmp_path: Path) -> None:
     assert settings.traces.excluded_paths == frozenset()
 
 
+def test_rejects_the_old_top_level_traces_endpoint(tmp_path: Path) -> None:
+    path = _write(tmp_path, 'traces-endpoint = "http://otel-collector:4317"\n')
+
+    with pytest.raises(
+        ValueError,
+        match=r"\[traces\] table as endpoint = 'http://otel-collector:4317'",
+    ):
+        Settings.from_toml(path)
+
+
 def test_traces_requires_an_endpoint(tmp_path: Path) -> None:
     path = _write(tmp_path, '[traces]\nexcluded-paths = ["/healthz"]\n')
 
