@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -54,13 +55,16 @@ class RoleTokenVerifier:
     the keys of the issuer that claims to have signed it.
     """
 
-    def __init__(self, roles: Sequence[RoleConfig]) -> None:
+    def __init__(
+        self, roles: Sequence[RoleConfig], required_scopes: Sequence[str] = ()
+    ) -> None:
         if not roles:
             raise ValueError("at least one role is required")
         roles_by_issuer: dict[str, list[RoleConfig]] = {}
         for role in roles:
             roles_by_issuer.setdefault(role.issuer, []).append(role)
         self._roles_by_issuer = roles_by_issuer
+        self._required_scopes = tuple(required_scopes)
         self._jwks_clients: dict[str, PyJWKClient] = {}
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -75,6 +79,24 @@ class RoleTokenVerifier:
                 return None
             span.set_attribute("auth.role", access_token.role)
             span.set_attribute("enduser.id", access_token.email)
+            # Claims are what the issuer asserted; the signature is not
+            # part of them. Kept on the span so a token that was accepted
+            # but then refused can be inspected afterwards.
+            span.set_attribute(
+                "auth.claims", json.dumps(access_token.claims, default=str)
+            )
+            missing = [
+                scope
+                for scope in self._required_scopes
+                if scope not in access_token.scopes
+            ]
+            if missing:
+                message = (
+                    f"expected the token to carry scope {' and '.join(map(repr, missing))}"
+                    f", but its scopes were {access_token.scopes!r}"
+                )
+                logger.warning("Bearer token lacks a required scope: %s", message)
+                span.set_attribute("auth.missing_scope", message)
             return access_token
 
     def _verify(self, token: str) -> UserAccessToken:
@@ -117,6 +139,7 @@ class RoleTokenVerifier:
             expires_at=int(claims["exp"]),
             email=email,
             role=role.name,
+            claims=claims,
         )
 
     def _roles_for_issuer(self, issuer: str | None) -> list[RoleConfig]:
@@ -228,23 +251,32 @@ def _email_from_claims(claims: dict[str, Any]) -> str:
 
 
 def _scopes_from_claims(claims: dict[str, Any], app_id_uri: str) -> list[str]:
-    """Read the token's scopes, qualified with the App ID URI.
+    """Read the token's scopes, both as the issuer wrote them and qualified.
 
     Entra puts bare scope names in ``scp`` (``"mcp.access"``), but the scope
     identifier used everywhere else — the authorization request, the metadata
     document's ``scopes_supported``, and so `AuthSettings.required_scopes`
-    which the SDK checks these against — is ``{App ID URI}/{name}``. Qualify
-    them here so the two are comparable.
+    which the SDK checks these against — is ``{App ID URI}/{name}``. Other
+    issuers put the names, as configured, in ``scope`` (RFC 9068). Reporting
+    each name in both forms lets `required_scopes` match either setup.
     """
     prefix = app_id_uri.rstrip("/")
     names = _scope_names_from_claims(claims)
-    return [f"{prefix}/{name}" for name in names]
+    scopes: list[str] = []
+    for name in names:
+        for scope in (name, f"{prefix}/{name}"):
+            if scope not in scopes:
+                scopes.append(scope)
+    return scopes
 
 
 def _scope_names_from_claims(claims: dict[str, Any]) -> list[str]:
-    scope = claims.get("scp")
-    if isinstance(scope, str):
-        return scope.split()
+    for key in ("scp", "scope"):
+        scope = claims.get(key)
+        if isinstance(scope, str):
+            return scope.split()
+        if isinstance(scope, list):
+            return [item for item in scope if isinstance(item, str)]
     roles = claims.get("roles")
     if isinstance(roles, list):
         return [role for role in roles if isinstance(role, str)]
