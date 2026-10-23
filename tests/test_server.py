@@ -137,11 +137,11 @@ def test_required_scopes_match_the_scopes_the_verifier_reports(
 
     assert auth_settings is not None
     assert auth_settings.required_scopes == [SCOPE]
-    # Entra puts the bare name in `scp`; the verifier qualifies it with the
-    # matching role's audience to match.
-    assert _scopes_from_claims({"scp": "mcp.access"}, settings.roles[0].audience) == [
-        SCOPE
-    ]
+    # Entra puts the bare name in `scp`; the verifier also reports it
+    # qualified with the matching role's audience.
+    assert SCOPE in _scopes_from_claims(
+        {"scp": "mcp.access"}, settings.roles[0].audience
+    )
 
 
 def _client_against(tmp_path: Path, handler: object) -> GrafanaClient:

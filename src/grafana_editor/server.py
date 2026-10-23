@@ -476,7 +476,7 @@ def _build_auth(
         raise RuntimeError(
             f"{', '.join(missing)} required in the config file (or pass --disable-auth)"
         )
-    token_verifier = RoleTokenVerifier(settings.roles)
+    token_verifier = RoleTokenVerifier(settings.roles, settings.scopes)
     auth_settings = AuthSettings(
         # Pass these as strings rather than pre-built AnyHttpUrl values:
         # AuthSettings sets `url_preserve_empty_path`, so it keeps a

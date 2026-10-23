@@ -67,8 +67,13 @@ def _make_token(
     return jwt.encode(payload, private_pem, algorithm="RS256")
 
 
-def _verify(signing_key: PyJWK, token: str, *roles: RoleConfig):
-    verifier = RoleTokenVerifier(roles or (ROLE,))
+def _verify(
+    signing_key: PyJWK,
+    token: str,
+    *roles: RoleConfig,
+    required_scopes: tuple[str, ...] = (),
+):
+    verifier = RoleTokenVerifier(roles or (ROLE,), required_scopes)
     jwks_client = MagicMock()
     jwks_client.get_signing_key_from_jwt.return_value = signing_key
     # Stand in for the client the verifier would build after discovering the
@@ -134,9 +139,35 @@ def test_reports_scopes_qualified_with_the_app_id_uri(
 
     assert access_token is not None
     assert access_token.scopes == [
+        "mcp.access",
         f"{AUDIENCE}/mcp.access",
+        "other.scope",
         f"{AUDIENCE}/other.scope",
     ]
+
+
+def test_reads_scopes_from_the_rfc_9068_scope_claim(
+    private_pem: str, signing_key: PyJWK
+) -> None:
+    token = _make_token(
+        private_pem, extra={"email": "alice@example.com", "scope": "openid email"}
+    )
+    access_token = _verify(signing_key, token)
+
+    assert access_token is not None
+    assert "email" in access_token.scopes
+
+
+def test_keeps_the_claims_but_not_the_signature(
+    private_pem: str, signing_key: PyJWK
+) -> None:
+    token = _make_token(private_pem, extra={"email": "alice@example.com"})
+    access_token = _verify(signing_key, token)
+
+    assert access_token is not None
+    assert access_token.claims is not None
+    assert access_token.claims["email"] == "alice@example.com"
+    assert token.rsplit(".", 1)[1] not in str(access_token.claims)
 
 
 def test_reports_the_role_that_matched(private_pem: str, signing_key: PyJWK) -> None:
@@ -207,3 +238,16 @@ def test_audience_rejection_names_both_sides(
     assert "'aud'" in caplog.text
     assert "api://someone-else" in caplog.text
     assert AUDIENCE in caplog.text
+
+
+def test_logs_expected_and_actual_scopes_when_one_is_missing(
+    private_pem: str, signing_key: PyJWK, caplog: pytest.LogCaptureFixture
+) -> None:
+    token = _make_token(
+        private_pem, extra={"email": "alice@example.com", "scope": "openid"}
+    )
+    with caplog.at_level("WARNING", logger="grafana_editor.auth"):
+        _verify(signing_key, token, required_scopes=("email",))
+
+    assert "expected the token to carry scope 'email'" in caplog.text
+    assert "'openid'" in caplog.text
