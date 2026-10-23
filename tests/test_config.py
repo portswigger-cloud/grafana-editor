@@ -27,6 +27,59 @@ def test_defaults(tmp_path: Path) -> None:
     assert settings.scopes == ()
     assert settings.offline_access is True
     assert settings.roles == ()
+    assert settings.traces is None
+
+
+def test_reads_traces_table(tmp_path: Path) -> None:
+    settings = Settings.from_toml(
+        _write(
+            tmp_path,
+            "[traces]\n"
+            'endpoint = "http://otel-collector:4317"\n'
+            'excluded-paths = ["/healthz", "/.well-known/oauth-protected-resource"]\n',
+        )
+    )
+
+    assert settings.traces is not None
+    assert settings.traces.endpoint == "http://otel-collector:4317"
+    assert settings.traces.excluded_paths == {
+        "/healthz",
+        "/.well-known/oauth-protected-resource",
+    }
+
+
+def test_traces_excludes_no_paths_by_default(tmp_path: Path) -> None:
+    settings = Settings.from_toml(
+        _write(tmp_path, '[traces]\nendpoint = "https://otel-collector:4317"\n')
+    )
+
+    assert settings.traces is not None
+    assert settings.traces.excluded_paths == frozenset()
+
+
+def test_traces_requires_an_endpoint(tmp_path: Path) -> None:
+    path = _write(tmp_path, '[traces]\nexcluded-paths = ["/healthz"]\n')
+
+    with pytest.raises(ValueError, match="traces.endpoint"):
+        Settings.from_toml(path)
+
+
+@pytest.mark.parametrize("endpoint", ["otel-collector:4317", "grpc://otel:4317"])
+def test_traces_endpoint_must_be_an_http_url(tmp_path: Path, endpoint: str) -> None:
+    path = _write(tmp_path, f'[traces]\nendpoint = "{endpoint}"\n')
+
+    with pytest.raises(ValueError, match=f"not '{endpoint}'"):
+        Settings.from_toml(path)
+
+
+def test_traces_excluded_paths_must_be_paths(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        '[traces]\nendpoint = "http://otel:4317"\nexcluded-paths = ["healthz"]\n',
+    )
+
+    with pytest.raises(ValueError, match="not 'healthz'"):
+        Settings.from_toml(path)
 
 
 def test_offline_access_is_advertised_alongside_the_required_scopes(

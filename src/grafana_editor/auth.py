@@ -13,6 +13,7 @@ from jwt.algorithms import HMACAlgorithm, NoneAlgorithm
 from mcp.server.auth.provider import AccessToken
 
 from grafana_editor.config import RoleConfig
+from grafana_editor.telemetry import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,18 @@ class RoleTokenVerifier:
         self._jwks_clients: dict[str, PyJWKClient] = {}
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        try:
-            return await asyncio.to_thread(self._verify, token)
-        except (InvalidTokenError, PyJWKClientError, TypeError, ValueError) as exc:
-            logger.warning("Bearer token rejected (%s): %s", type(exc).__name__, exc)
-            return None
+        with tracer.start_as_current_span("verify bearer token") as span:
+            try:
+                access_token = await asyncio.to_thread(self._verify, token)
+            except (InvalidTokenError, PyJWKClientError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Bearer token rejected (%s): %s", type(exc).__name__, exc
+                )
+                span.set_attribute("auth.rejected", f"{type(exc).__name__}: {exc}")
+                return None
+            span.set_attribute("auth.role", access_token.role)
+            span.set_attribute("enduser.id", access_token.email)
+            return access_token
 
     def _verify(self, token: str) -> UserAccessToken:
         # Which roles a token could match is decided by its `iss` claim, and
@@ -101,7 +109,7 @@ class RoleTokenVerifier:
         email = _email_from_claims(claims)
         scopes = _scopes_from_claims(claims, role.audience)
         client_id = claims.get("azp") or claims.get("appid") or claims.get("sub", "")
-        logger.info("Bearer token accepted for role '%s'", role.name)
+        logger.info("Bearer token accepted for role '%s' (%s)", role.name, email)
         return UserAccessToken(
             token=token,
             client_id=client_id,
