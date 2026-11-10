@@ -58,6 +58,7 @@ def test_every_request_is_logged_and_traced(
 
     [record] = [r for r in caplog.records if r.name == "grafana_editor.access"]
     assert '"GET /no-such-path" 404' in record.getMessage()
+    assert " user=- " in record.getMessage()
     assert '"probe/1"' in record.getMessage()
     [span] = [s for s in spans.get_finished_spans() if s.kind == SpanKind.SERVER]
     assert span.name == "GET /no-such-path"
@@ -159,3 +160,31 @@ async def test_a_tool_call_traces_the_grafana_request_inside_it(
     assert all(r.parent and r.parent.span_id == tool.context.span_id for r in requests)
     # Grafana sees the trace context too, so its own spans can join the trace.
     assert seen_traceparent[0] is not None
+
+
+def test_the_log_line_names_the_authenticated_user_and_a_request_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from types import SimpleNamespace
+
+    from starlette.responses import PlainTextResponse
+    from starlette.types import Receive, Scope, Send
+
+    from grafana_editor.telemetry import RequestLoggingMiddleware
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        # What the MCP SDK's auth middleware does once a token verifies.
+        scope["user"] = SimpleNamespace(
+            access_token=SimpleNamespace(email="alice@example.com")
+        )
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    client = TestClient(RequestLoggingMiddleware(app))
+    with caplog.at_level(logging.INFO, logger="grafana_editor.access"):
+        client.get("/a")
+        client.get("/b")
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 2
+    assert all(" user=alice@example.com " in m for m in messages)
+    assert messages[0].split()[0] != messages[1].split()[0]
