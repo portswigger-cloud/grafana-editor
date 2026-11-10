@@ -18,6 +18,7 @@ from starlette.testclient import TestClient
 from grafana_editor.config import GrafanaSettings, Settings, TracingSettings
 from grafana_editor.grafana import GrafanaClient
 from grafana_editor.server import create_app, create_server
+from grafana_editor.telemetry import SAMPLER
 
 
 @pytest.fixture(scope="module")
@@ -25,7 +26,7 @@ def exporter() -> InMemorySpanExporter:
     # The global provider can be set once per process, so every test in this
     # module shares it and clears what it recorded.
     exporter = InMemorySpanExporter()
-    provider = TracerProvider()
+    provider = TracerProvider(sampler=SAMPLER)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     return exporter
@@ -64,6 +65,27 @@ def test_every_request_is_logged_and_traced(
     assert span.name == "GET /no-such-path"
     assert span.attributes is not None
     assert span.attributes["http.response.status_code"] == 404
+
+
+def test_a_request_the_caller_did_not_sample_is_still_traced(
+    tmp_path: Path, spans: InMemorySpanExporter, caplog: pytest.LogCaptureFixture
+) -> None:
+    app = create_app(Settings(grafana=_grafana(tmp_path)), disable_auth=True)
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00"
+
+    with (
+        caplog.at_level(logging.INFO, logger="grafana_editor.access"),
+        TestClient(app) as client,
+    ):
+        client.get("/no-such-path", headers={"traceparent": traceparent})
+
+    [record] = [r for r in caplog.records if r.name == "grafana_editor.access"]
+    assert record.getMessage().endswith(f"traceparent={traceparent}")
+    [span] = [s for s in spans.get_finished_spans() if s.kind == SpanKind.SERVER]
+    # Still part of the caller's trace, even though it was not sampled there.
+    assert format(span.context.trace_id, "032x") == "0af7651916cd43dd8448eb211c80319c"
+    assert span.attributes is not None
+    assert span.attributes["http.request.header.traceparent"] == traceparent
 
 
 def test_an_excluded_path_is_logged_but_emits_no_spans(
