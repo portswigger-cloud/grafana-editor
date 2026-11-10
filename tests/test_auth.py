@@ -100,12 +100,22 @@ def test_falls_back_to_preferred_username(private_pem: str, signing_key: PyJWK) 
     assert access_token.email == "bob@example.com"
 
 
+def test_falls_back_to_unique_name(private_pem: str, signing_key: PyJWK) -> None:
+    token = _make_token(private_pem, extra={"unique_name": "carol@example.com"})
+    access_token = _verify(signing_key, token)
+
+    assert access_token is not None
+    assert access_token.email == "carol@example.com"
+
+
 def test_rejects_token_without_any_email_claim(
-    private_pem: str, signing_key: PyJWK
+    private_pem: str, signing_key: PyJWK, caplog: pytest.LogCaptureFixture
 ) -> None:
-    token = _make_token(private_pem)
+    token = _make_token(private_pem, extra={"oid": "1234"})
 
     assert _verify(signing_key, token) is None
+    assert "expected the token to include one of 'email'" in caplog.text
+    assert "'oid'" in caplog.text
 
 
 def test_rejects_wrong_audience(private_pem: str, signing_key: PyJWK) -> None:

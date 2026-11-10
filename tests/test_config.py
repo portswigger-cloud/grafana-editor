@@ -27,34 +27,34 @@ def test_defaults(tmp_path: Path) -> None:
     assert settings.scopes == ()
     assert settings.offline_access is True
     assert settings.roles == ()
-    assert settings.traces is None
+    assert settings.tracing is None
 
 
-def test_reads_traces_table(tmp_path: Path) -> None:
+def test_reads_tracing_table(tmp_path: Path) -> None:
     settings = Settings.from_toml(
         _write(
             tmp_path,
-            "[traces]\n"
+            "[tracing]\n"
             'endpoint = "http://otel-collector:4317"\n'
             'excluded-paths = ["/healthz", "/.well-known/oauth-protected-resource"]\n',
         )
     )
 
-    assert settings.traces is not None
-    assert settings.traces.endpoint == "http://otel-collector:4317"
-    assert settings.traces.excluded_paths == {
+    assert settings.tracing is not None
+    assert settings.tracing.endpoint == "http://otel-collector:4317"
+    assert settings.tracing.excluded_paths == {
         "/healthz",
         "/.well-known/oauth-protected-resource",
     }
 
 
-def test_traces_excludes_no_paths_by_default(tmp_path: Path) -> None:
+def test_tracing_excludes_no_paths_by_default(tmp_path: Path) -> None:
     settings = Settings.from_toml(
-        _write(tmp_path, '[traces]\nendpoint = "https://otel-collector:4317"\n')
+        _write(tmp_path, '[tracing]\nendpoint = "https://otel-collector:4317"\n')
     )
 
-    assert settings.traces is not None
-    assert settings.traces.excluded_paths == frozenset()
+    assert settings.tracing is not None
+    assert settings.tracing.excluded_paths == frozenset()
 
 
 def test_rejects_the_old_top_level_traces_endpoint(tmp_path: Path) -> None:
@@ -62,30 +62,37 @@ def test_rejects_the_old_top_level_traces_endpoint(tmp_path: Path) -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"\[traces\] table as endpoint = 'http://otel-collector:4317'",
+        match=r"\[tracing\] table as endpoint = 'http://otel-collector:4317'",
     ):
         Settings.from_toml(path)
 
 
-def test_traces_requires_an_endpoint(tmp_path: Path) -> None:
-    path = _write(tmp_path, '[traces]\nexcluded-paths = ["/healthz"]\n')
+def test_rejects_the_old_traces_table(tmp_path: Path) -> None:
+    path = _write(tmp_path, '[traces]\nendpoint = "http://otel-collector:4317"\n')
 
-    with pytest.raises(ValueError, match="traces.endpoint"):
+    with pytest.raises(ValueError, match=r"rename it to \[tracing\]"):
+        Settings.from_toml(path)
+
+
+def test_tracing_requires_an_endpoint(tmp_path: Path) -> None:
+    path = _write(tmp_path, '[tracing]\nexcluded-paths = ["/healthz"]\n')
+
+    with pytest.raises(ValueError, match="tracing.endpoint"):
         Settings.from_toml(path)
 
 
 @pytest.mark.parametrize("endpoint", ["otel-collector:4317", "grpc://otel:4317"])
-def test_traces_endpoint_must_be_an_http_url(tmp_path: Path, endpoint: str) -> None:
-    path = _write(tmp_path, f'[traces]\nendpoint = "{endpoint}"\n')
+def test_tracing_endpoint_must_be_an_http_url(tmp_path: Path, endpoint: str) -> None:
+    path = _write(tmp_path, f'[tracing]\nendpoint = "{endpoint}"\n')
 
     with pytest.raises(ValueError, match=f"not '{endpoint}'"):
         Settings.from_toml(path)
 
 
-def test_traces_excluded_paths_must_be_paths(tmp_path: Path) -> None:
+def test_tracing_excluded_paths_must_be_paths(tmp_path: Path) -> None:
     path = _write(
         tmp_path,
-        '[traces]\nendpoint = "http://otel:4317"\nexcluded-paths = ["healthz"]\n',
+        '[tracing]\nendpoint = "http://otel:4317"\nexcluded-paths = ["healthz"]\n',
     )
 
     with pytest.raises(ValueError, match="not 'healthz'"):

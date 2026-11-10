@@ -77,7 +77,7 @@ service-account-token-path = "/secrets/grafana/token"
 
 # Optional: export trace spans to an OTLP gRPC collector. Without this table
 # no spans leave the process.
-# [traces]
+# [tracing]
 # http:// dials the collector without TLS, https:// with it.
 # endpoint = "http://otel-collector.observability:4317"
 # Request paths, matched exactly, that produce no spans (they are still
