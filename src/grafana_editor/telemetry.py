@@ -5,6 +5,7 @@ import functools
 import inspect
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -79,6 +80,7 @@ class RequestLoggingMiddleware:
         client = scope.get("client")
         client_addr = f"{client[0]}:{client[1]}" if client else "-"
         status = 0
+        request_id = uuid.uuid4().hex[:12]
 
         async def send_wrapper(message: Message) -> None:
             nonlocal status
@@ -99,6 +101,7 @@ class RequestLoggingMiddleware:
                     "url.path": path,
                     "client.address": client[0] if client else "",
                     "user_agent.original": headers.get("user-agent", ""),
+                    "http.request.id": request_id,
                 },
             )
         )
@@ -115,14 +118,27 @@ class RequestLoggingMiddleware:
                     span.set_status(Status(StatusCode.ERROR))
                 access_logger.log(
                     logging.DEBUG if path == "/healthz" else logging.INFO,
-                    '%s "%s %s" %d %.1fms "%s"',
+                    '%s %s user=%s "%s %s" %d %.1fms "%s"',
+                    request_id,
                     client_addr,
+                    _authenticated_email(scope),
                     method,
                     path,
                     status,
                     elapsed_ms,
                     headers.get("user-agent", "-"),
                 )
+
+
+def _authenticated_email(scope: Scope) -> str:
+    """The caller's email, or ``-`` if the request carried no verified token.
+
+    The MCP SDK's auth middleware, which runs inside this one, stores the
+    verified token on the shared ASGI scope.
+    """
+    user = scope.get("user")
+    token = getattr(user, "access_token", None)
+    return getattr(token, "email", None) or "-"
 
 
 def traced_tool[F: Callable[..., Any]](fn: F) -> F:
