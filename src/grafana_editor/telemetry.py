@@ -14,6 +14,7 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON, ParentBased
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -25,6 +26,12 @@ access_logger = logging.getLogger("grafana_editor.access")
 # Until `configure_tracing` installs a provider, this hands out no-op spans, so
 # instrumented code needs no "is tracing on" checks of its own.
 tracer = trace.get_tracer("grafana_editor")
+
+# Record every request, even when the caller's `traceparent` says it was not
+# sampled: callers' own sampling rates are none of this service's business, and
+# honouring them silently drops the authenticated requests. A local unsampled
+# parent, which is how `excluded_paths` opts a request out, is still followed.
+SAMPLER = ParentBased(ALWAYS_ON, remote_parent_not_sampled=ALWAYS_ON)
 
 # The parent for requests that should not be traced. The default sampler
 # follows its parent's sampled flag, so every span started beneath this one is
@@ -43,7 +50,9 @@ def configure_tracing(endpoint: str) -> TracerProvider:
     it. The caller shuts the returned provider down on exit, which is what
     flushes the spans still waiting in the batch.
     """
-    provider = TracerProvider(resource=Resource.create({"service.name": SERVICE_NAME}))
+    provider = TracerProvider(
+        resource=Resource.create({"service.name": SERVICE_NAME}), sampler=SAMPLER
+    )
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
     trace.set_tracer_provider(provider)
     logger.info("exporting traces to %s", endpoint)
@@ -102,6 +111,7 @@ class RequestLoggingMiddleware:
                     "client.address": client[0] if client else "",
                     "user_agent.original": headers.get("user-agent", ""),
                     "http.request.id": request_id,
+                    "http.request.header.traceparent": headers.get("traceparent", ""),
                 },
             )
         )
@@ -118,7 +128,7 @@ class RequestLoggingMiddleware:
                     span.set_status(Status(StatusCode.ERROR))
                 access_logger.log(
                     logging.DEBUG if path == "/healthz" else logging.INFO,
-                    '%s %s user=%s "%s %s" %d %.1fms "%s"',
+                    '%s %s user=%s "%s %s" %d %.1fms "%s" traceparent=%s',
                     request_id,
                     client_addr,
                     _authenticated_email(scope),
@@ -127,6 +137,7 @@ class RequestLoggingMiddleware:
                     status,
                     elapsed_ms,
                     headers.get("user-agent", "-"),
+                    headers.get("traceparent", "-"),
                 )
 
 
