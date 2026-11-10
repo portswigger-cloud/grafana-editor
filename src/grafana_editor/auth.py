@@ -28,6 +28,9 @@ PUBLIC_KEY_ALGORITHMS: tuple[str, ...] = tuple(
 )
 
 
+EMAIL_CLAIMS = ("email", "preferred_username", "unique_name", "upn")
+
+
 class UserAccessToken(AccessToken):
     """An access token that also carries the caller's email address.
 
@@ -236,16 +239,17 @@ def _email_from_claims(claims: dict[str, Any]) -> str:
     """Pick the best available email-shaped claim off an access token.
 
     ``email`` is only present when the app registration requests it as an
-    optional claim; ``preferred_username`` is present by default and is
-    usually the user's UPN, which is an email address for most tenants but
-    not guaranteed to be one.
+    optional claim; ``preferred_username`` is present by default in v2 tokens
+    and ``unique_name`` and ``upn`` in v1 ones. They are usually the user's
+    UPN, which is an email address for most tenants but not guaranteed to be.
     """
-    for key in ("email", "preferred_username", "upn"):
+    for key in EMAIL_CLAIMS:
         value = claims.get(key)
         if isinstance(value, str) and value.strip():
             return value
     raise ValueError(
-        "token did not include an email, preferred_username, or upn claim; "
+        f"expected the token to include one of {', '.join(map(repr, EMAIL_CLAIMS))}"
+        f", but its claims were {sorted(claims)}; "
         "add 'email' as an optional claim on the app registration"
     )
 

@@ -85,7 +85,7 @@ class GrafanaSettings:
 
 
 @dataclass(frozen=True)
-class TracesSettings:
+class TracingSettings:
     """Where spans are exported, and which requests produce none.
 
     ``endpoint`` is an OTLP gRPC collector, e.g. ``http://otel-collector:4317``;
@@ -98,12 +98,12 @@ class TracesSettings:
     excluded_paths: frozenset[str] = frozenset()
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> TracesSettings:
-        endpoint = _required_string(data, "endpoint", context="traces")
+    def from_mapping(cls, data: dict[str, Any]) -> TracingSettings:
+        endpoint = _required_string(data, "endpoint", context="tracing")
         parsed = urlparse(endpoint)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError(
-                "traces.endpoint must be an http:// or https:// URL with a "
+                "tracing.endpoint must be an http:// or https:// URL with a "
                 f"host, such as http://otel-collector:4317, not {endpoint!r}"
             )
         return cls(
@@ -124,7 +124,7 @@ class Settings:
     holding one. The two are not interchangeable — a tenant can hand out
     tokens whose issuer is not the authorization server its clients talk to.
 
-    ``traces`` says where to export spans; unset, no spans leave the process.
+    ``tracing`` says where to export spans; unset, no spans leave the process.
 
     ``offline_access`` asks clients to request a refresh token as well; see
     ``advertised_scopes``.
@@ -140,7 +140,7 @@ class Settings:
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
     log_level: str = "INFO"
-    traces: TracesSettings | None = None
+    tracing: TracingSettings | None = None
     resource_server_url: str | None = None
     origin: str | None = None
     scopes: tuple[str, ...] = ()
@@ -194,7 +194,7 @@ class Settings:
             tls_cert_path=tls_cert_path,
             tls_key_path=tls_key_path,
             log_level=_log_level_or_default(data, "log-level", cls.log_level),
-            traces=_traces(data),
+            tracing=_tracing(data),
             resource_server_url=_optional_string(
                 data, "resource-server-url", context="top-level"
             ),
@@ -215,33 +215,37 @@ def _grafana(data: dict[str, Any]) -> GrafanaSettings | None:
     return GrafanaSettings.from_mapping(raw)
 
 
-def _traces(data: dict[str, Any]) -> TracesSettings | None:
-    # An earlier version read this top-level key. Ignoring it now would leave
-    # a config that still sets it running without the traces it asks for.
+def _tracing(data: dict[str, Any]) -> TracingSettings | None:
+    # Earlier versions read these keys. Ignoring them now would leave a config
+    # that still sets one running without the traces it asks for.
     if "traces-endpoint" in data:
         raise ValueError(
-            "traces-endpoint is no longer supported; move it into a [traces] "
+            "traces-endpoint is no longer supported; move it into a [tracing] "
             f"table as endpoint = {data['traces-endpoint']!r}"
         )
-    raw = data.get("traces")
+    if "traces" in data:
+        raise ValueError(
+            "the [traces] table is no longer supported; rename it to [tracing]"
+        )
+    raw = data.get("tracing")
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise TypeError(f"traces must be a table, not a {type(raw).__name__}")
-    return TracesSettings.from_mapping(raw)
+        raise TypeError(f"tracing must be a table, not a {type(raw).__name__}")
+    return TracingSettings.from_mapping(raw)
 
 
 def _excluded_paths(data: dict[str, Any]) -> list[str]:
     raw = data.get("excluded-paths", [])
     if not isinstance(raw, list):
         raise TypeError(
-            "traces.excluded-paths must be an array of strings, "
+            "tracing.excluded-paths must be an array of strings, "
             f"not a {type(raw).__name__}"
         )
     for path in raw:
         if not isinstance(path, str) or not path.startswith("/"):
             raise ValueError(
-                "traces.excluded-paths entries must be strings starting with "
+                "tracing.excluded-paths entries must be strings starting with "
                 f"'/', such as '/healthz', not {path!r}"
             )
     return raw

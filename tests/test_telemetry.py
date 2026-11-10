@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.trace import SpanKind
 from starlette.testclient import TestClient
 
-from grafana_editor.config import GrafanaSettings, Settings, TracesSettings
+from grafana_editor.config import GrafanaSettings, Settings, TracingSettings
 from grafana_editor.grafana import GrafanaClient
 from grafana_editor.server import create_app, create_server
 
@@ -77,7 +77,7 @@ def test_an_excluded_path_is_logged_but_emits_no_spans(
 
     settings = Settings(
         grafana=_grafana(tmp_path),
-        traces=TracesSettings(
+        tracing=TracingSettings(
             endpoint="http://otel:4317", excluded_paths=frozenset({"/mcp"})
         ),
     )

@@ -571,7 +571,7 @@ def create_app(
             Middleware(
                 RequestLoggingMiddleware,
                 excluded_paths=(
-                    settings.traces.excluded_paths if settings.traces else frozenset()
+                    settings.tracing.excluded_paths if settings.tracing else frozenset()
                 ),
             )
         ],

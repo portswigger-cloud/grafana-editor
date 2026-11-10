@@ -57,7 +57,9 @@ def main(config_path: str, disable_auth: bool) -> None:
     settings = Settings.from_toml(config_path)
     configure_logging(settings.log_level)
     logger.info("Starting grafana-editor")
-    provider = configure_tracing(settings.traces.endpoint) if settings.traces else None
+    provider = (
+        configure_tracing(settings.tracing.endpoint) if settings.tracing else None
+    )
     try:
         asyncio.run(run(settings, disable_auth))
     finally:
