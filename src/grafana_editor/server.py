@@ -37,7 +37,9 @@ confirm a query returns what you expect.
 Then create_dashboard to build from those confirmed queries, and hand the \
 user the "url" it returns so they can look at it. Iterate with \
 get_dashboard and update_dashboard on that uid rather than creating another \
-dashboard each time.
+dashboard each time. Once a draft has been promoted to a permanent \
+dashboard, delete_dashboard removes the sandbox copy; it only deletes the \
+signed-in user's own dashboards.
 
 Dashboards are created in a sandbox folder, which is the only place this \
 server writes, and their titles are prefixed with the signed-in user's name \
@@ -383,6 +385,22 @@ def _build_server(
                 message=message,
             )
         )
+
+    @mcp.tool()
+    @traced_tool
+    async def delete_dashboard(
+        uid: Annotated[str, Field(description="The uid of the dashboard to delete.")],
+    ) -> dict[str, Any]:
+        """Delete one of your own sandbox dashboards, returning its uid and title.
+
+        For cleaning up a sandbox draft once it has been promoted to a
+        permanent dashboard in grafana-resources. Only dashboards in the
+        sandbox folder whose title starts with the signed-in user's name
+        prefix (as create_dashboard sets it) can be deleted; anything else,
+        including other people's sandbox drafts, is refused.
+        """
+        author = _caller_author()
+        return await _guard(grafana.delete_dashboard(author=author, uid=uid))
 
     @mcp.tool()
     @traced_tool

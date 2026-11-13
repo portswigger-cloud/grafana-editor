@@ -168,6 +168,7 @@ async def test_exposes_the_query_and_dashboard_tools(tmp_path: Path) -> None:
         "query_range",
         "create_dashboard",
         "update_dashboard",
+        "delete_dashboard",
         "get_dashboard",
         "list_dashboards",
     }
@@ -281,3 +282,50 @@ async def test_creating_a_dashboard_needs_a_signed_in_user(tmp_path: Path) -> No
         await server.call_tool(
             "create_dashboard", {"title": "Nameless", "dashboard": {}}
         )
+
+
+@pytest.mark.anyio
+async def test_deleting_is_limited_to_the_signed_in_user_s_dashboards(
+    tmp_path: Path,
+) -> None:
+    titles = {"mine": "noa.resare: Mine", "theirs": "other.person: Theirs"}
+    deleted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/search":
+            return httpx.Response(
+                200, json=[{"uid": "sandbox-uid", "title": "Sandbox"}]
+            )
+        uid = request.url.path.rsplit("/", 1)[-1]
+        if request.method == "DELETE":
+            deleted.append(uid)
+            return httpx.Response(200, json={"title": titles[uid]})
+        return httpx.Response(
+            200,
+            json={
+                "meta": {"folderUid": "sandbox-uid", "folderTitle": "Sandbox"},
+                "dashboard": {"uid": uid, "title": titles[uid]},
+            },
+        )
+
+    server = create_server(
+        _settings(tmp_path),
+        disable_auth=True,
+        grafana_client=_client_against(tmp_path, handler),
+    )
+
+    token = auth_context_var.set(_signed_in("noa.resare@portswigger.net"))
+    try:
+        result = await server.call_tool("delete_dashboard", {"uid": "mine"})
+        with pytest.raises(ToolError, match="not one of your dashboards"):
+            await server.call_tool("delete_dashboard", {"uid": "theirs"})
+    finally:
+        auth_context_var.reset(token)
+
+    assert isinstance(result, CallToolResult)
+    assert result.structured_content == {
+        "uid": "mine",
+        "title": "noa.resare: Mine",
+        "folder": "Sandbox",
+    }
+    assert deleted == ["mine"]

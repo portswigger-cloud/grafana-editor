@@ -209,6 +209,9 @@ Tools:
   URL to open it at.
 - `update_dashboard` — replace a sandbox dashboard's contents, for iterating
   on one rather than creating another.
+- `delete_dashboard` — delete one of the caller's own sandbox dashboards
+  (its title must carry their name prefix), for removing a draft once it has
+  been promoted to grafana-resources.
 - `get_dashboard` — the stored dashboard JSON, its URL and version, and
   whether this server may write to it.
 - `list_dashboards` — what is in the sandbox folder, by default only the
@@ -237,8 +240,9 @@ Two things are true of every dashboard this server writes, and neither is up
 to the caller.
 
 **It goes in the sandbox folder.** `grafana.sandbox-folder` names it
-(default `Sandbox`), and nothing else is written to. `update_dashboard`
-checks the folder a dashboard is actually in before replacing it, so a uid
+(default `Sandbox`), and nothing else is written to. `update_dashboard` and
+`delete_dashboard` check the folder a dashboard is actually in before
+replacing or deleting it, so a uid
 from elsewhere is refused here rather than at Grafana's permission check.
 
 **Its title is prefixed with the caller's name**, taken from the part of
