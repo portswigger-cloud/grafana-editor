@@ -476,16 +476,7 @@ class GrafanaClient:
         title: str | None = None,
         message: str | None = None,
     ) -> dict[str, Any]:
-        folder = await self.sandbox_folder()
-        current = await self._fetch_dashboard(uid)
-        meta = current.get("meta") or {}
-        existing = current.get("dashboard") or {}
-        if meta.get("folderUid") != folder.uid:
-            raise GrafanaError(
-                f"dashboard '{uid}' is in the folder "
-                f"'{meta.get('folderTitle') or meta.get('folderUid') or 'General'}', "
-                f"and this server only writes to '{folder.title}'"
-            )
+        folder, existing = await self._sandbox_dashboard(uid)
         body = _dashboard_body(
             author,
             # Keeping the stored title when none is given is what makes
@@ -513,6 +504,24 @@ class GrafanaClient:
             },
         )
         return self._saved(payload, folder, body["title"])
+
+    async def delete_dashboard(self, *, author: str, uid: str) -> dict[str, Any]:
+        folder, existing = await self._sandbox_dashboard(uid)
+        title = str(existing.get("title") or "")
+        # The sandbox is shared, so only the caller's own drafts, recognised by
+        # the title prefix create_dashboard gave them, may be deleted.
+        if not has_author_prefix(author, title):
+            raise GrafanaError(
+                f"dashboard '{uid}' is titled '{title}', which does not start "
+                f"with '{author}: ', so it is not one of your dashboards and "
+                f"this server will not delete it"
+            )
+        await self._api_request("DELETE", f"/api/dashboards/uid/{quote(uid, safe='')}")
+        return {
+            "uid": uid,
+            "title": title,
+            "folder": folder.title,
+        }
 
     async def get_dashboard(self, uid: str) -> dict[str, Any]:
         payload = await self._fetch_dashboard(uid)
@@ -559,6 +568,23 @@ class GrafanaClient:
                 if isinstance(item, dict)
             ],
         }
+
+    async def _sandbox_dashboard(self, uid: str) -> tuple[Folder, dict[str, Any]]:
+        """Fetch a dashboard this server may write to, or refuse with why not.
+
+        Every write to an existing dashboard goes through here, so the rule
+        that nothing outside the sandbox folder is changed lives in one place.
+        """
+        folder = await self.sandbox_folder()
+        current = await self._fetch_dashboard(uid)
+        meta = current.get("meta") or {}
+        if meta.get("folderUid") != folder.uid:
+            raise GrafanaError(
+                f"dashboard '{uid}' is in the folder "
+                f"'{meta.get('folderTitle') or meta.get('folderUid') or 'General'}', "
+                f"and this server only writes to '{folder.title}'"
+            )
+        return folder, current.get("dashboard") or {}
 
     async def _fetch_dashboard(self, uid: str) -> dict[str, Any]:
         payload = await self._api_request(
@@ -679,10 +705,15 @@ def prefixed_title(author: str, title: str) -> str:
     clean = " ".join(title.split())
     if not clean:
         raise GrafanaError("a dashboard needs a title, but the title given was empty")
-    prefix = f"{author}: "
-    if clean.casefold().startswith(prefix.casefold()):
+    if has_author_prefix(author, clean):
         return clean
-    return f"{prefix}{clean}"
+    return f"{author}: {clean}"
+
+
+def has_author_prefix(author: str, title: str) -> bool:
+    """Whether a title carries the prefix prefixed_title gives this author."""
+    clean = " ".join(title.split())
+    return clean.casefold().startswith(f"{author}: ".casefold())
 
 
 def _dashboard_body(

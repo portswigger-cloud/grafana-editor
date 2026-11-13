@@ -36,6 +36,7 @@ class FakeGrafana:
         self.folders = folders if folders is not None else FOLDERS
         self.dashboards = dashboards or {}
         self.saves: list[dict[str, Any]] = []
+        self.deletes: list[str] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -46,6 +47,13 @@ class FakeGrafana:
             stored = self.dashboards.get(uid)
             if stored is None:
                 return httpx.Response(404, json={"message": "Dashboard not found"})
+            if request.method == "DELETE":
+                self.deletes.append(uid)
+                del self.dashboards[uid]
+                title = stored["dashboard"]["title"]
+                return httpx.Response(
+                    200, json={"title": title, "message": f"Dashboard {title} deleted"}
+                )
             return httpx.Response(200, json=stored)
         if path == "/api/dashboards/db" and request.method == "POST":
             return self._save(request)
@@ -423,6 +431,91 @@ async def test_update_surfaces_a_version_conflict(tmp_path: Path) -> None:
 
     assert "changed by someone else" in str(caught.value)
     assert "412" in str(caught.value)
+
+
+# -- deleting ----------------------------------------------------------------
+
+
+async def test_delete_removes_a_sandbox_dashboard(tmp_path: Path) -> None:
+    fake = FakeGrafana(
+        dashboards={
+            "abc": _stored("abc", title="noa.resare: X", folder_uid="sandbox-uid")
+        }
+    )
+    client = _client(tmp_path, fake)
+
+    result = await client.delete_dashboard(author="noa.resare", uid="abc")
+
+    assert result == {"uid": "abc", "title": "noa.resare: X", "folder": "Sandbox"}
+    assert fake.deletes == ["abc"]
+    assert "abc" not in fake.dashboards
+
+
+async def test_delete_removes_a_dashboard_the_caller_created(tmp_path: Path) -> None:
+    fake = FakeGrafana()
+    client = _client(tmp_path, fake)
+    created = await client.create_dashboard(
+        author="noa.resare", title="Server Temperature", dashboard={}
+    )
+
+    result = await client.delete_dashboard(author="noa.resare", uid=created["uid"])
+
+    assert result["title"] == "noa.resare: Server Temperature"
+    assert fake.deletes == [created["uid"]]
+
+
+async def test_delete_refuses_someone_else_s_sandbox_dashboard(
+    tmp_path: Path,
+) -> None:
+    fake = FakeGrafana(
+        dashboards={
+            "theirs": _stored(
+                "theirs", title="other.person: X", folder_uid="sandbox-uid"
+            ),
+            "untagged": _stored("untagged", title="Scratch", folder_uid="sandbox-uid"),
+            # A name that merely starts with the caller's is someone else's.
+            "longer": _stored(
+                "longer", title="noa.resare2: X", folder_uid="sandbox-uid"
+            ),
+        }
+    )
+    client = _client(tmp_path, fake)
+
+    for uid in ("theirs", "untagged", "longer"):
+        with pytest.raises(GrafanaError) as caught:
+            await client.delete_dashboard(author="noa.resare", uid=uid)
+        assert "not one of your dashboards" in str(caught.value)
+
+    assert fake.deletes == []
+    assert set(fake.dashboards) == {"theirs", "untagged", "longer"}
+
+
+async def test_delete_refuses_a_dashboard_outside_the_sandbox(tmp_path: Path) -> None:
+    fake = FakeGrafana(
+        dashboards={
+            "prod": _stored("prod", title="noa.resare: Live", folder_uid="prod-uid")
+        }
+    )
+    client = _client(tmp_path, fake)
+
+    with pytest.raises(GrafanaError) as caught:
+        await client.delete_dashboard(author="noa.resare", uid="prod")
+
+    assert "only writes to 'Sandbox'" in str(caught.value)
+    # No DELETE reached Grafana, and the dashboard is still there.
+    assert fake.deletes == []
+    assert "prod" in fake.dashboards
+
+
+async def test_delete_reports_an_unknown_uid(tmp_path: Path) -> None:
+    fake = FakeGrafana()
+    client = _client(tmp_path, fake)
+
+    with pytest.raises(GrafanaError) as caught:
+        await client.delete_dashboard(author="noa.resare", uid="nope")
+
+    assert "Dashboard not found" in str(caught.value)
+    assert fake.deletes == []
 
 
 # -- reading and listing -----------------------------------------------------
