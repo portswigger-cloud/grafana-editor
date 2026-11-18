@@ -167,6 +167,7 @@ def test_reads_metadata_and_roles(tmp_path: Path) -> None:
     assert role.issuer == f"https://sts.windows.net/{TENANT_ID}/"
     assert role.audience == f"api://{CLIENT_ID}"
     assert role.jwks_uri is None
+    assert role.required_app_role is None
 
 
 def test_reads_several_roles_and_an_explicit_jwks_uri(tmp_path: Path) -> None:
@@ -192,6 +193,39 @@ def test_reads_several_roles_and_an_explicit_jwks_uri(tmp_path: Path) -> None:
     assert settings.roles[1].jwks_uri == (
         "https://login.microsoftonline.com/tenant/discovery/v2.0/keys"
     )
+
+
+def test_reads_a_required_app_role(tmp_path: Path) -> None:
+    settings = Settings.from_toml(
+        _write(
+            tmp_path,
+            """
+            [[role]]
+            name = "entra"
+            issuer = "https://sts.windows.net/tenant/"
+            audience = "api://app"
+            required-app-role = "Grafana.Editor"
+            """,
+        )
+    )
+
+    assert settings.roles[0].required_app_role == "Grafana.Editor"
+
+
+def test_rejects_an_empty_required_app_role(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="role 'entra'.required-app-role"):
+        Settings.from_toml(
+            _write(
+                tmp_path,
+                """
+                [[role]]
+                name = "entra"
+                issuer = "https://sts.windows.net/tenant/"
+                audience = "api://app"
+                required-app-role = ""
+                """,
+            )
+        )
 
 
 def test_rejects_a_role_without_an_audience(tmp_path: Path) -> None:

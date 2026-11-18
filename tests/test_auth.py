@@ -261,3 +261,60 @@ def test_logs_expected_and_actual_scopes_when_one_is_missing(
 
     assert "expected the token to carry scope 'email'" in caplog.text
     assert "'openid'" in caplog.text
+
+
+APP_ROLE = RoleConfig(
+    name="entra",
+    issuer=ISSUER,
+    audience=AUDIENCE,
+    required_app_role="Grafana.Editor",
+)
+
+
+def test_accepts_a_token_carrying_the_required_app_role(
+    private_pem: str, signing_key: PyJWK
+) -> None:
+    token = _make_token(
+        private_pem,
+        extra={"email": "alice@example.com", "roles": ["Reader", "Grafana.Editor"]},
+    )
+
+    assert _verify(signing_key, token, APP_ROLE) is not None
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [None, [], ["Reader"], "Grafana.Editor", ["grafana.editor"]],
+    ids=["absent", "empty", "other-role", "not-a-list", "wrong-case"],
+)
+def test_rejects_a_token_without_the_required_app_role(
+    private_pem: str, signing_key: PyJWK, roles: object
+) -> None:
+    extra: dict[str, object] = {"email": "alice@example.com"}
+    if roles is not None:
+        extra["roles"] = roles
+    token = _make_token(private_pem, extra=extra)
+
+    assert _verify(signing_key, token, APP_ROLE) is None
+
+
+def test_app_role_rejection_names_both_sides(
+    private_pem: str, signing_key: PyJWK, caplog: pytest.LogCaptureFixture
+) -> None:
+    token = _make_token(
+        private_pem, extra={"email": "alice@example.com", "roles": ["Reader"]}
+    )
+
+    with caplog.at_level("WARNING"):
+        assert _verify(signing_key, token, APP_ROLE) is None
+
+    assert "'Grafana.Editor'" in caplog.text
+    assert "['Reader']" in caplog.text
+
+
+def test_requires_no_app_role_unless_configured(
+    private_pem: str, signing_key: PyJWK
+) -> None:
+    token = _make_token(private_pem, extra={"email": "alice@example.com"})
+
+    assert _verify(signing_key, token) is not None

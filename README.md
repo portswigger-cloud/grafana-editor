@@ -49,6 +49,8 @@ things:
   provider is hardcoded; a role may set `jwks-uri` itself for an issuer
   that publishes no discovery document. A token is accepted if it matches
   any one role, so a second issuer just means a second `[[role]]`.
+  A role may also set `required-app-role`, in which case the token's
+  `roles` claim must include that string.
 
 An issuer is not the same thing as the authorization server clients talk
 to, and for Entra it usually isn't: an app registration whose manifest
@@ -67,7 +69,13 @@ That means setting this up requires an **app registration in Entra ID**:
 3. Under "Token configuration", add `email` as an optional claim on the
    **access token** — the `preferred_username` claim Entra includes by
    default is usually an email address too, but isn't guaranteed to be one.
-4. Register the MCP client as an authorized client for that scope (Entra's
+4. Optionally, to limit who may connect, add an app role under "App roles"
+   (allowed member types: Users/Groups), assign it to users or groups under
+   the enterprise application's "Users and groups", and name it as the
+   role's `required-app-role`. Entra lists a user's assigned app roles in
+   the access token's `roles` claim; a token without the configured one is
+   rejected.
+5. Register the MCP client as an authorized client for that scope (Entra's
    support for OAuth dynamic client registration is limited, so which
    clients this covers depends on how your MCP client obtains credentials —
    check its docs for connecting to an Entra-protected MCP server).
