@@ -131,6 +131,7 @@ class RoleTokenVerifier:
             for role in candidates
             if role.issuer == claims["iss"] and role.audience == claims["aud"]
         )
+        _require_app_role(claims, role)
         email = _email_from_claims(claims)
         scopes = _scopes_from_claims(claims, role.audience)
         client_id = claims.get("azp") or claims.get("appid") or claims.get("sub", "")
@@ -224,6 +225,20 @@ def _require_claim(claims: dict[str, Any], name: str, accepted: Sequence[str]) -
     if value in accepted:
         return
     raise _claim_mismatch(name, accepted, value)
+
+
+def _require_app_role(claims: dict[str, Any], role: RoleConfig) -> None:
+    required = role.required_app_role
+    if required is None:
+        return
+    app_roles = claims.get("roles")
+    if isinstance(app_roles, list) and required in app_roles:
+        return
+    raise InvalidTokenError(
+        f"role '{role.name}' expected the 'roles' claim to include {required!r}, "
+        f"but it was {app_roles!r}; assign the user or one of their groups "
+        "that app role"
+    )
 
 
 def _claim_mismatch(

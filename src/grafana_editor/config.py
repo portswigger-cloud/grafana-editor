@@ -35,12 +35,17 @@ class RoleConfig:
     default issues v1 tokens, with an issuer of
     ``https://sts.windows.net/{tenant}/``, even for a client that
     authenticated via the v2 endpoints.
+
+    ``required_app_role``, when set, must also appear in the token's ``roles``
+    claim. Entra puts a user's app role assignments there, so this is how
+    access is limited to the users and groups assigned that role.
     """
 
     name: str
     audience: str
     issuer: str
     jwks_uri: str | None = None
+    required_app_role: str | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> RoleConfig:
@@ -51,6 +56,9 @@ class RoleConfig:
             audience=_required_string(data, "audience", context=context),
             issuer=_required_string(data, "issuer", context=context),
             jwks_uri=_optional_string(data, "jwks-uri", context=context),
+            required_app_role=_optional_string(
+                data, "required-app-role", context=context
+            ),
         )
 
 
