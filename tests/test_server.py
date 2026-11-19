@@ -166,6 +166,8 @@ async def test_exposes_the_query_and_dashboard_tools(tmp_path: Path) -> None:
         "list_label_values",
         "query_instant",
         "query_range",
+        "search_traces",
+        "get_trace",
         "create_dashboard",
         "update_dashboard",
         "delete_dashboard",

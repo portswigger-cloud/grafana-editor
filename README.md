@@ -165,11 +165,11 @@ rather than by giving the service account the Editor role globally.
 Datasource queries go through Grafana's datasource proxy
 (`/api/datasources/proxy/uid/...`), so Grafana's own datasource
 authentication and access control still apply and this server never needs
-credentials for Mimir or Loki themselves.
+credentials for Mimir, Loki or Tempo themselves.
 
 Prometheus-shaped datasources (`prometheus`, which is also how Grafana reports
-a Mimir or Thanos backend, and `grafana-amazonprometheus-datasource`) and
-`loki` are queryable. `list_datasources` reports `queryable: false` for
+a Mimir or Thanos backend, and `grafana-amazonprometheus-datasource`),
+`loki` and `tempo` are queryable. `list_datasources` reports `queryable: false` for
 anything else, and a query against one names the type it got and the types it
 needed.
 
@@ -207,12 +207,21 @@ Tools:
 - `describe_metrics` — the type, unit and help text a metric was exported
   with, which is what decides whether a panel needs `rate()` and how it
   should be formatted.
-- `list_labels` — label names on a Prometheus or Loki datasource.
-- `list_label_values` — the values one label takes; this is what fills in a
-  dashboard template variable's options.
+- `list_labels` — label names on a Prometheus or Loki datasource, or span
+  and resource attributes on a Tempo one, named as TraceQL spells them
+  (`resource.service.name`, `span.http.route`, and bare intrinsics such as
+  `duration`).
+- `list_label_values` — the values one label or attribute takes; this is
+  what fills in a dashboard template variable's options.
 - `query_instant` — evaluate PromQL or LogQL at a single instant.
-- `query_range` — evaluate PromQL or LogQL over a window, which is the shape
-  a time series panel draws.
+- `query_range` — evaluate PromQL, LogQL or a TraceQL metrics query over a
+  window, which is the shape a time series panel draws. TraceQL metrics
+  (`{...} | rate() by (...)`) are how to chart data that is only recorded in
+  spans, and come back in the same series shape as PromQL.
+- `search_traces` — find traces with a TraceQL query, returning each trace's
+  root service, duration and the spans that matched.
+- `get_trace` — every span of one trace as a single list in start order,
+  with service, parent, duration, status, attributes and events.
 - `create_dashboard` — create a dashboard in the sandbox folder, returning the
   URL to open it at.
 - `update_dashboard` — replace a sandbox dashboard's contents, for iterating
