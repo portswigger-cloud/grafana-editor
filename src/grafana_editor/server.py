@@ -34,6 +34,12 @@ list_datasources, then list_metrics / describe_metrics / list_labels / \
 list_label_values to see what exists, then query_instant or query_range to \
 confirm a query returns what you expect.
 
+For traces on a Tempo datasource, list_labels and list_label_values list \
+span and resource attributes, search_traces runs a TraceQL search, get_trace \
+returns every span of one trace, and query_range runs a TraceQL metrics \
+query (e.g. {resource.service.name="api"} | rate() by (span.http.route)), \
+which is how to chart something that is only recorded in spans.
+
 Then create_dashboard to build from those confirmed queries, and hand the \
 user the "url" it returns so they can look at it. Iterate with \
 get_dashboard and update_dashboard on that uid rather than creating another \
@@ -81,7 +87,8 @@ PromSelector = Annotated[
         description=(
             "Optional series selector restricting the result to series that "
             "match it, e.g. '{namespace=\"grafana-editor\"}'. For Loki "
-            "datasources this is a log stream selector."
+            "datasources this is a log stream selector, and for Tempo a "
+            "TraceQL query such as '{resource.service.name=\"api\"}'."
         )
     ),
 ]
@@ -136,7 +143,8 @@ def _build_server(
         Start here: the uid of a datasource from this list is what every
         other tool takes. A datasource whose "queryable" is false is one
         this server cannot query yet (only Prometheus-shaped backends
-        such as Prometheus, Mimir and Thanos, and Loki, are supported).
+        such as Prometheus, Mimir and Thanos, Loki, and Tempo are
+        supported).
         """
         datasources = await _guard(grafana.list_datasources())
         return {
@@ -192,10 +200,13 @@ def _build_server(
         start: Start = None,
         end: End = None,
     ) -> dict[str, Any]:
-        """List the label names present on a Prometheus or Loki datasource.
+        """List the label names present on a Prometheus, Loki or Tempo datasource.
 
         With a selector, lists only the labels carried by series that match
         it, which is the quick way to learn how one metric is dimensioned.
+        On Tempo these are span and resource attributes, named as TraceQL
+        spells them (resource.service.name, span.http.route), plus
+        intrinsics such as name, status and duration.
         """
         return await _guard(
             grafana.list_labels(datasource, selector=selector, start=start, end=end)
@@ -211,7 +222,8 @@ def _build_server(
                 description=(
                     "The label name to list values for, e.g. 'namespace'. "
                     "Use '__name__' on a Prometheus datasource to list "
-                    "metric names."
+                    "metric names. On Tempo, a scoped attribute name as "
+                    "list_labels returns it, e.g. 'resource.service.name'."
                 )
             ),
         ],
@@ -219,7 +231,7 @@ def _build_server(
         start: Start = None,
         end: End = None,
     ) -> dict[str, Any]:
-        """List the values one label takes on a Prometheus or Loki datasource.
+        """List the values one label takes on a Prometheus, Loki or Tempo datasource.
 
         This is what fills in a dashboard template variable's options, and
         what tells you whether a label filter you are about to write will
@@ -270,7 +282,9 @@ def _build_server(
             Field(
                 description=(
                     "The query: PromQL for a Prometheus-shaped datasource, "
-                    "LogQL for a Loki one."
+                    "LogQL for a Loki one, or a TraceQL metrics query for a "
+                    'Tempo one, e.g. \'{resource.service.name="api"} | '
+                    "quantile_over_time(duration, .95) by (span.http.route)'."
                 )
             ),
         ],
@@ -290,10 +304,94 @@ def _build_server(
         """Evaluate a query over a time window and return the series.
 
         This is the shape a time series panel draws. The reply reports the
-        step that was used, so a panel can be built with the same one.
+        step that was used, so a panel can be built with the same one. On a
+        Tempo datasource this turns spans into time series with TraceQL
+        metrics functions such as rate(), count_over_time() and
+        quantile_over_time().
         """
         return await _guard(
             grafana.query_range(datasource, expr, start=start, end=end, step=step)
+        )
+
+    @mcp.tool()
+    @traced_tool
+    async def search_traces(
+        datasource: Datasource,
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    'A TraceQL query, e.g. \'{resource.service.name="api" && '
+                    "status=error}' or '{span.http.route=\"/login\" && "
+                    "duration > 500ms}'. '{}' matches every trace."
+                )
+            ),
+        ],
+        start: Start = None,
+        end: End = None,
+        limit: Annotated[
+            int,
+            Field(description="How many traces to return, at most 100."),
+        ] = 20,
+        spans_per_span_set: Annotated[
+            int,
+            Field(
+                description=(
+                    "How many matching spans to include per trace. Each "
+                    "trace still reports how many spans matched in total."
+                )
+            ),
+        ] = 3,
+    ) -> dict[str, Any]:
+        """Find traces on a Tempo datasource with a TraceQL query.
+
+        Returns each matching trace's id, root service, start and duration,
+        with the spans that matched and their attributes. Pass a trace_id to
+        get_trace to see every span of one trace. To count or chart spans
+        rather than look at examples, use a TraceQL metrics query in
+        query_range instead.
+        """
+        return await _guard(
+            grafana.search_traces(
+                datasource,
+                query,
+                start=start,
+                end=end,
+                limit=limit,
+                spans_per_span_set=spans_per_span_set,
+            )
+        )
+
+    @mcp.tool()
+    @traced_tool
+    async def get_trace(
+        datasource: Datasource,
+        trace_id: Annotated[
+            str,
+            Field(description="The trace id in hex, as search_traces returns it."),
+        ],
+        start: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional start of a window the trace falls in, which "
+                    "makes the lookup faster. Omit to search all of Tempo."
+                )
+            ),
+        ] = None,
+        end: Annotated[
+            str | None,
+            Field(description="Optional end of a window the trace falls in."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Get every span of one trace from a Tempo datasource.
+
+        Spans come back as one list in start order, each with its service,
+        parent span, duration, status, attributes and events (exceptions are
+        recorded as events). Large traces are truncated, and say so.
+        """
+        return await _guard(
+            grafana.get_trace(datasource, trace_id, start=start, end=end)
         )
 
     @mcp.tool()
