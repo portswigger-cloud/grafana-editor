@@ -47,7 +47,7 @@ jobs:
         id: image-version
         run: |
           # <nearest reachable vX.Y.Z>-<hash of the build context>, which is what
-          image_version="$(uvx container-image-hash --tag)"
+          image_version="$(uvx --from "git+https://github.com/portswigger-cloud/container-image-hash@07d00c5c6556677e488a72eecb42600e156b974a" container-image-hash --tag)"
           echo "tag=${IMAGE_REGISTRY}/${IMAGE_REPOSITORY}:${image_version}" >> "$GITHUB_OUTPUT"
           echo "image_version=${image_version}" >> "$GITHUB_OUTPUT"
           # The version is the tag without the trailing build hash. Taking it from
